@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>DeviceTrade POS - Logistics & Ledger</title>
+  
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#4f46e5" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DeviceTrade" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+
+  <link rel="stylesheet" href="style.css" />
+  <script defer src="app.js"></script>
+</head>
+<body>
+
+<div class="app-viewport">
+
+  <!-- PWA Install Prompt Banner -->
+  <div id="pwa-install-banner" class="pwa-prompt" style="display: none;">
+    <div class="pwa-prompt-info">
+      <span>📲</span>
+      <div>
+        <strong>Install POS Application</strong>
+        <p>Install on Android or PC for offline support and faster access.</p>
+      </div>
+    </div>
+    <div class="pwa-prompt-actions">
+      <button class="btn btn-primary btn-sm" onclick="triggerPwaInstall()">Install</button>
+      <button class="btn btn-subtle btn-sm" onclick="dismissPwaPrompt()">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- AUTHENTICATION VIEW -->
+  <div id="view-auth" class="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <h2>⚡ DeviceTrade Pro</h2>
+        <p>Arbitrage Logistics, Booker OTPs & Ledger POS</p>
+      </div>
+
+      <div class="role-switcher">
+        <button type="button" class="role-toggle-btn active" id="btn-auth-admin" onclick="selectAuthRole('admin')">Master Admin</button>
+        <button type="button" class="role-toggle-btn" id="btn-auth-customer" onclick="selectAuthRole('customer')">Booker Portal</button>
+      </div>
+
+      <form id="auth-form" onsubmit="executeLogin(event)">
+        <div class="form-field">
+          <label class="form-label">Username or Booker ID</label>
+          <input type="text" id="auth-username" class="form-input" autocomplete="username" required />
+        </div>
+        <div class="form-field">
+          <label class="form-label">Password</label>
+          <input type="password" id="auth-password" class="form-input" autocomplete="current-password" required />
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px; margin-top: 6px;">Sign In to Workspace</button>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- MAIN WORKSPACE -->
+  <div id="view-app-main" style="display: none; flex-direction: column; min-height: 100vh;">
+    
+    <header class="header-bar">
+      <div class="brand-section">
+        <div class="brand-title">📦 DeviceTrade Pro</div>
+        <span id="badge-active-role" class="role-badge admin">Master Admin</span>
+      </div>
+
+      <nav class="nav-links-desktop" id="desktop-nav-container"></nav>
+
+      <div class="header-actions">
+        <div class="sync-status" title="Sync Status">
+          <div class="sync-dot" id="cloud-sync-dot"></div>
+          <span id="cloud-sync-label">Online</span>
+        </div>
+        <div class="user-profile-info">
+          <span id="user-display-label">Admin</span>
+        </div>
+        <button class="btn btn-subtle btn-sm" onclick="logoutApp()">Sign Out</button>
+      </div>
+    </header>
+
+    <main style="flex: 1;">
+
+      <!-- TAB 1: HOME DASHBOARD -->
+      <section id="tab-home" class="view-content active">
+        <div class="delivery-today-banner" onclick="openOutForDeliveryModal()">
+          <div class="banner-left">
+            <div class="banner-icon-box">🚚</div>
+            <div class="banner-text">
+              <h3>
+                <span>Out For Delivery Today</span>
+                <span class="badge-counter" id="badge-today-count">0 Shipments</span>
+              </h3>
+              <p>Live courier OTPs, pincodes, and direct Excel export.</p>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openOutForDeliveryModal();">
+            View & Export Excel 📥
+          </button>
+        </div>
+
+        <div class="kpi-grid" id="home-kpi-grid"></div>
+
+        <div class="section-heading">
+          <h3 id="home-table-title">Active Booking Pipeline</h3>
+          <button class="btn btn-primary btn-sm" onclick="openNewOrderModal()">+ New Booking</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Platform</th>
+                  <th>Product Model</th>
+                  <th>Customer</th>
+                  <th>Card (Last 4)</th>
+                  <th>Amount Paid</th>
+                  <th>Advance Taken</th>
+                  <th>Balance Due</th>
+                  <th>GST Included</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="table-home-orders"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: BOOKINGS / ORDERS -->
+      <section id="tab-orders" class="view-content">
+        <div class="filter-bar">
+          <div class="filter-group">
+            <input type="text" id="order-search" class="input-search" placeholder="Search ID, model, customer, card..." oninput="debouncedRenderOrders()" />
+            <select id="order-status-filter" class="select-filter" onchange="renderOrdersTable()">
+              <option value="ALL">All Statuses</option>
+              <option value="Booked">Booked</option>
+              <option value="In Process">In Process</option>
+              <option value="Out for Delivery">Out for Delivery</option>
+              <option value="Delivered">Delivered (Pending Settlement)</option>
+              <option value="Settled">Settled (Lifetime Deals)</option>
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openNewOrderModal()">+ Add New Booking</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Platform</th>
+                  <th>Model / Spec</th>
+                  <th>Card</th>
+                  <th>Customer</th>
+                  <th>Amount Paid</th>
+                  <th>Advance Taken</th>
+                  <th>Net Due</th>
+                  <th>GST Total</th>
+                  <th>Status</th>
+                  <th>Stage Actions</th>
+                </tr>
+              </thead>
+              <tbody id="table-all-orders"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: DELIVERIES & OTP HUB -->
+      <section id="tab-delivery" class="view-content">
+        <div class="filter-bar">
+          <div class="filter-group">
+            <input type="text" id="delivery-search" class="input-search" placeholder="Search pin, tracking, recipient..." oninput="debouncedRenderDeliveries()" />
+            <select id="delivery-platform-filter" class="select-filter" onchange="renderDeliveryTable()">
+              <option value="ALL">All Platforms</option>
+              <option value="Flipkart">Flipkart</option>
+              <option value="Amazon">Amazon</option>
+              <option value="Reliance Digital">Reliance Digital</option>
+              <option value="Croma">Croma</option>
+              <option value="Pinelabs">Pinelabs</option>
+              <option value="Apple Store">Apple Store</option>
+              <option value="Other">Other</option>
+            </select>
+            <input type="date" id="delivery-date-filter" class="input-search" onchange="renderDeliveryTable()" />
+          </div>
+          <button class="btn btn-excel btn-sm" onclick="exportFilteredDeliveriesToExcel()">Export Deliveries (.csv)</button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Platform</th>
+                  <th>Locked Model</th>
+                  <th>Recipient Name</th>
+                  <th>Contact</th>
+                  <th>Tracking / AWB</th>
+                  <th>Delivery OTP</th>
+                  <th>Pincode</th>
+                  <th>GST Invoice</th>
+                  <th>Status</th>
+                  <th>Workflow Action</th>
+                </tr>
+              </thead>
+              <tbody id="table-delivery-list"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: PROFIT LEDGER -->
+      <!-- TAB 4: CUSTOMERS & BOOKERS (ADMIN ONLY) -->
+      <section id="tab-customers" class="view-content">
+        <div class="filter-bar">
+          <div class="filter-group">
+            <input type="text" id="cust-search" class="input-search" placeholder="Search customer ID, name or phone..." oninput="debouncedRenderCustomers()" />
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary btn-sm" onclick="openCreateCustomerModal()">+ Register Booker</button>
+            <button class="btn btn-subtle btn-sm" onclick="exportCustomerLedgerCSV()">Export Ledger (.csv)</button>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Booker ID</th>
+                  <th>Name & Contact</th>
+                  <th>Access</th>
+                  <th>Managing Admin</th>
+                  <th>Active Deals</th>
+                  <th>Lifetime Deals</th>
+                  <th>Total Volume</th>
+                  <th>Total Settled</th>
+                  <th>Balance Due</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="table-customers-list"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: GST INVOICES VAULT -->
+      <section id="tab-invoices" class="view-content">
+        <div class="filter-bar">
+          <div class="filter-group">
+            <input type="text" id="invoice-search" class="input-search" placeholder="Search customer, GSTIN, shop, product..." oninput="debouncedRenderInvoices()" />
+            <select id="invoice-product-filter" class="select-filter" onchange="renderInvoicesGallery()">
+              <option value="ALL">All Products</option>
+            </select>
+          </div>
+          <button class="btn btn-subtle btn-sm" onclick="downloadAllInvoicesCSV()">Export Invoices List (.csv)</button>
+        </div>
+
+        <div class="invoice-grid" id="invoice-cards-container"></div>
+      </section>
+
+      <!-- TAB 6: SETTINGS & PRODUCT CATALOG (ADMIN ONLY) -->
+      <section id="tab-settings" class="view-content">
+        <div class="settings-grid">
+          
+          <div class="kpi-card">
+            <h3>🔐 Master Admin Security Profile</h3>
+            <p>Admin credentials sync with Google Sheets and backend.</p>
+            <form onsubmit="handleSaveAdminProfile(event)">
+              <div class="form-grid two-col">
+                <div class="form-field">
+                  <label class="form-label">Master Admin ID</label>
+                  <input type="text" id="cfg-admin-id" class="form-input" readonly />
+                </div>
+                <div class="form-field">
+                  <label class="form-label">Admin Full Name</label>
+                  <input type="text" id="cfg-admin-name" class="form-input" required />
+                </div>
+              </div>
+              <div class="form-grid two-col">
+                <div class="form-field">
+                  <label class="form-label">Username</label>
+                  <input type="text" id="cfg-admin-user" class="form-input" required />
+                </div>
+                <div class="form-field">
+                  <label class="form-label">Password</label>
+                  <input type="password" id="cfg-admin-pass" class="form-input" required />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm" style="margin-top: 4px;">Update & Sync Profile</button>
+            </form>
+          </div>
+
+          <div class="kpi-card">
+            <h3>☁️ Data Management</h3>
+            <p>Import Admins, Bookers, Products, and Orders from the configured Google Sheet.</p>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
+              <button class="btn btn-primary btn-sm" onclick="syncFromGoogleSheets()">↻ Import Google Sheet</button>
+              <button class="btn btn-subtle btn-sm" onclick="downloadAllAppData()">↓ Download All Data</button>
+              <button class="btn btn-danger btn-sm" onclick="resetLocalAppData()">Reset Local Data</button>
+            </div>
+            <p id="data-management-status" style="margin-top:10px; color:var(--text-muted);">IndexedDB is the local POS store.</p>
+            <button class="btn btn-primary btn-sm" onclick="openCreateAdminModal()">+ Add Admin Account</button>
+          </div>
+
+          <div class="kpi-card">
+            <h3>Admin Access Control</h3>
+            <p>Only the Master Admin can revoke or activate subordinate admins.</p>
+            <div id="admin-access-list"></div>
+          </div>
+
+          <div class="kpi-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+              <h3>📱 Product Catalog & Commissions</h3>
+              <button class="btn btn-primary btn-sm" onclick="openNewProductModal()">+ Add Model</button>
+            </div>
+            <div id="settings-product-list" style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto;"></div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <nav class="mobile-bottom-bar" id="mobile-nav-container"></nav>
+  </div>
+
+  <!-- MODALS -->
+
+  <!-- Modal: Lifetime Bookings Filter -->
+  <div class="modal-backdrop" id="modal-lifetime-drilldown">
+    <div class="modal-window wide">
+      <div class="modal-header">
+        <div class="modal-title">📈 Lifetime Settled Deals & Ledger</div>
+        <button class="modal-close" onclick="closeModal('modal-lifetime-drilldown')">&times;</button>
+      </div>
+
+      <div class="filter-bar">
+        <div class="filter-group">
+          <select id="lifetime-date-filter-type" class="select-filter" onchange="handleLifetimeFilterTypeChange()">
+            <option value="ALL">All Time</option>
+            <option value="DAY">Specific Day</option>
+            <option value="MONTH">Month-wise</option>
+            <option value="YEAR">Year-wise</option>
+          </select>
+          <input type="date" id="lifetime-filter-date" class="input-search" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
+          <input type="month" id="lifetime-filter-month" class="input-search" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
+          <select id="lifetime-filter-year" class="select-filter" style="display:none;" onchange="renderLifetimeDrilldownTable()">
+            <option value="2026">2026</option>
+            <option value="2025">2025</option>
+          </select>
+        </div>
+        <button class="btn btn-excel btn-sm" onclick="exportLifetimeBookingsToExcel()">Export Filtered CSV 📥</button>
+      </div>
+
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px;">
+        <div class="kpi-card" style="padding:10px;">
+          <div class="kpi-label">Deals Settled</div>
+          <div class="kpi-val" id="lifetime-metric-count" style="font-size:1.1rem;">0</div>
+        </div>
+        <div class="kpi-card green" style="padding:10px;">
+          <div class="kpi-label">Settled Volume</div>
+          <div class="kpi-val" id="lifetime-metric-volume" style="font-size:1.1rem; color:#34d399;">₹0</div>
+        </div>
+        <div class="kpi-card amber" style="padding:10px;">
+          <div class="kpi-label">Commissions Paid</div>
+          <div class="kpi-val" id="lifetime-metric-profit" style="font-size:1.1rem; color:#fbbf24;">₹0</div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Order ID</th>
+                <th>Platform</th>
+                <th>Model</th>
+                <th>Customer</th>
+                <th>Card</th>
+                <th>Amount Paid</th>
+                <th>Settled Date</th>
+                <th>GST Invoice</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="table-lifetime-drilldown-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Out For Delivery Today -->
+  <div class="modal-backdrop" id="modal-today-delivery">
+    <div class="modal-window wide">
+      <div class="modal-header">
+        <div class="modal-title">🚚 Out For Delivery Today</div>
+        <button class="modal-close" onclick="closeModal('modal-today-delivery')">&times;</button>
+      </div>
+      <div class="filter-bar">
+        <div class="filter-group">
+          <input type="text" id="today-filter-pin" class="input-search" placeholder="Filter by Pincode..." oninput="renderTodayDeliveryTable()" />
+          <input type="text" id="today-filter-name" class="input-search" placeholder="Filter by Recipient..." oninput="renderTodayDeliveryTable()" />
+          <input type="text" id="today-filter-product" class="input-search" placeholder="Filter by Product..." oninput="renderTodayDeliveryTable()" />
+        </div>
+        <button class="btn btn-excel btn-sm" onclick="exportTodayDeliveriesToExcel()">Download in Excel (.csv) 📥</button>
+      </div>
+      <div class="table-card">
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Platform</th>
+                <th>Model</th>
+                <th>Recipient Name</th>
+                <th>Phone</th>
+                <th>Tracking AWB</th>
+                <th>OTP</th>
+                <th>Pincode</th>
+              </tr>
+            </thead>
+            <tbody id="table-today-deliveries-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New Booking Form -->
+  <div class="modal-backdrop" id="modal-new-order">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">Book New Device Order</div>
+        <button class="modal-close" onclick="closeModal('modal-new-order')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateBooking(event)">
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Buying Platform</label>
+            <select id="modal-order-platform" class="form-select" required>
+              <option value="Flipkart">Flipkart</option>
+              <option value="Amazon">Amazon</option>
+              <option value="Reliance Digital">Reliance Digital</option>
+              <option value="Croma">Croma</option>
+              <option value="Pinelabs">Pinelabs</option>
+              <option value="Apple Store">Apple Store</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Product Model</label>
+            <select id="modal-order-product" class="form-select" onchange="autoFillOrderPrice()" required></select>
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Merchant Order ID</label>
+            <input type="text" id="modal-order-id" class="form-input" placeholder="e.g. OD4029102931" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Card Last 4 Digits</label>
+            <input type="text" id="modal-order-card" class="form-input" maxlength="4" placeholder="e.g. 7632" required />
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Amount Paid On Card (₹)</label>
+            <input type="number" id="modal-order-paid" class="form-input" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Advance Taken (₹)</label>
+            <input type="number" id="modal-order-advance" class="form-input" value="0" />
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Booker Account</label>
+          <select id="modal-order-customer-select" class="form-select" required></select>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 10px;">Register Booking & Sync</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Submit Delivery & GST File Upload (PDF & Photos) -->
+  <div class="modal-backdrop" id="modal-delivery-submission">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">Submit Out-For-Delivery & GST Details</div>
+        <button class="modal-close" onclick="closeModal('modal-delivery-submission')">&times;</button>
+      </div>
+      <form onsubmit="handleSaveDeliveryWithGst(event)">
+        <input type="hidden" id="deliv-form-order-id" />
+        
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Locked Product Model</label>
+            <input type="text" id="deliv-form-model" class="form-input" readonly />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Platform / Merchant</label>
+            <select id="deliv-form-platform" class="form-select" required>
+              <option value="Flipkart">Flipkart</option>
+              <option value="Amazon">Amazon</option>
+              <option value="Reliance Digital">Reliance Digital</option>
+              <option value="Croma">Croma</option>
+              <option value="Pinelabs">Pinelabs</option>
+              <option value="Apple Store">Apple Store</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Recipient Name</label>
+            <input type="text" id="deliv-form-name" class="form-input" value="Abhijit Modak" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Mobile Number</label>
+            <input type="tel" id="deliv-form-mobile" class="form-input" value="7699434637" required />
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Tracking Number / AWB</label>
+            <input type="text" id="deliv-form-tracking" class="form-input" placeholder="e.g. FMPP4079948230" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Pincode</label>
+            <input type="text" id="deliv-form-pincode" class="form-input" placeholder="e.g. 251001" required />
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Live Delivery OTP</label>
+          <input type="text" id="deliv-form-otp" class="form-input otp-field" placeholder="e.g. 885189" required />
+        </div>
+
+        <!-- GST File Upload & Breakdown -->
+        <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:0.85rem;">GST Invoice Details & Attachment</strong>
+            <label style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
+              <input type="checkbox" id="deliv-gst-toggle" onchange="toggleGstFields()" /> Include GST Bill
+            </label>
+          </div>
+
+          <div id="deliv-gst-fields-wrapper" style="display:none;">
+            <div class="form-grid two-col">
+              <div class="form-field">
+                <label class="form-label">GST Number (GSTIN)</label>
+                <input type="text" id="gst-input-number" class="form-input" placeholder="e.g. 19ABCDE1234F1Z5" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Shop / Merchant Name</label>
+                <input type="text" id="gst-input-shop" class="form-input" placeholder="e.g. RetailNet / Appario" />
+              </div>
+            </div>
+
+            <div class="form-grid two-col">
+              <div class="form-field">
+                <label class="form-label">Taxable Base Amount (₹)</label>
+                <input type="number" id="gst-input-base" class="form-input" placeholder="e.g. 14406" oninput="recalcGstTotal()" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">GST Percentage Rate</label>
+                <select id="gst-input-rate" class="form-select" onchange="recalcGstTotal()">
+                  <option value="18">18% (Standard Electronics)</option>
+                  <option value="12">12%</option>
+                  <option value="28">28%</option>
+                  <option value="5">5%</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-grid two-col" style="background:rgba(0,0,0,0.2); padding:8px; border-radius:6px;">
+              <div style="font-size:0.78rem; color:var(--text-muted);">
+                Calculated Tax: <strong id="gst-calc-tax" style="color:#fbbf24;">₹0</strong>
+              </div>
+              <div style="font-size:0.78rem; color:var(--text-muted);">
+                Gross Total: <strong id="gst-calc-total" style="color:#34d399;">₹0</strong>
+              </div>
+            </div>
+
+            <div class="form-field" style="margin-top:8px;">
+              <label class="form-label">Upload Invoice (PDF File or Camera Photo)</label>
+              <div class="file-upload-zone" onclick="document.getElementById('deliv-gst-file-input').click()">
+                <input type="file" id="deliv-gst-file-input" accept="image/*,application/pdf" capture="environment" style="display:none;" onchange="handleGstFileChosen(this)" />
+                <div id="upload-status-text">
+                  📁 <strong>Click to attach PDF or snap camera photo</strong><br />
+                  <span>Images auto-compress. PDF max size: 2MB</span>
+                </div>
+                <img id="deliv-gst-preview" class="preview-thumb" style="display:none;" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 6px;">Submit Delivery Details</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Create Booker Account Under Admin -->
+  <div class="modal-backdrop" id="modal-create-customer">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">Register Booker Under Admin</div>
+        <button class="modal-close" onclick="closeModal('modal-create-customer')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateCustomerAccount(event)">
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Generated Booker ID</label>
+            <input type="text" id="new-cust-id" class="form-input" readonly style="color:var(--accent-cyan); font-weight:700;" />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Booker Full Name</label>
+            <input type="text" id="new-cust-name" class="form-input" placeholder="e.g. Soumen Rai" required />
+          </div>
+        </div>
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Mobile Number</label>
+            <input type="tel" id="new-cust-mobile" class="form-input" placeholder="e.g. 9830012345" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Set Login Password</label>
+            <input type="text" id="new-cust-password" class="form-input" required />
+          </div>
+        </div>
+        <div class="form-field">
+          <label class="form-label">Supervising Admin</label>
+          <input type="text" id="new-cust-admin-creator" class="form-input" readonly style="opacity:0.8;" />
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 10px;">Create Booker Account & Sync</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Create Admin Account -->
+  <div class="modal-backdrop" id="modal-create-admin">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">Create Admin Account</div>
+        <button class="modal-close" onclick="closeModal('modal-create-admin')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateAdmin(event)">
+        <div class="form-field"><label class="form-label">Admin ID</label><input type="text" id="new-admin-id" class="form-input" required /></div>
+        <div class="form-field"><label class="form-label">Admin Name</label><input type="text" id="new-admin-name" class="form-input" required /></div>
+        <div class="form-grid two-col">
+          <div class="form-field"><label class="form-label">Username</label><input type="text" id="new-admin-username" class="form-input" required /></div>
+          <div class="form-field"><label class="form-label">Password</label><input type="password" id="new-admin-password" class="form-input" required /></div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%; padding:11px;">Create Admin & Sync</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Settlement Processing (Admin Full Control) -->
+  <div class="modal-backdrop" id="modal-settlement">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title">Process Order Settlement (Admin)</div>
+        <button class="modal-close" onclick="closeModal('modal-settlement')">&times;</button>
+      </div>
+      <form onsubmit="handleExecuteSettlement(event)">
+        <input type="hidden" id="settle-order-id" />
+        <input type="hidden" id="settle-customer-id" />
+        
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Order Reference</label>
+            <input type="text" id="settle-order-ref" class="form-input" readonly />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Booker Name</label>
+            <input type="text" id="settle-customer-name" class="form-input" readonly />
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Outstanding Balance (₹)</label>
+            <input type="text" id="settle-current-balance" class="form-input" readonly style="color: var(--accent-amber); font-weight: 700;" />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Settlement Amount (₹)</label>
+            <input type="number" id="settle-amount-input" class="form-input" placeholder="Enter amount" required />
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Payment Mode / Reference Note</label>
+          <input type="text" id="settle-notes" class="form-input" placeholder="e.g. Bank IMPS / UPI Ref #9021948201" required />
+        </div>
+
+        <button type="submit" class="btn btn-success" style="width: 100%; padding: 11px; margin-top: 10px;">Process Payout & Settle</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Product Model Edit -->
+  <div class="modal-backdrop" id="modal-edit-product">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title" id="prod-modal-title">Edit Product Model</div>
+        <button class="modal-close" onclick="closeModal('modal-edit-product')">&times;</button>
+      </div>
+      <form onsubmit="handleSaveProduct(event)">
+        <input type="hidden" id="edit-prod-id" />
+        <div class="form-field">
+          <label class="form-label">Product Name & Spec</label>
+          <input type="text" id="edit-prod-name" class="form-input" placeholder="e.g. iPhone 16 Pro 256GB" required />
+        </div>
+        <div class="form-grid two-col">
+          <div class="form-field">
+            <label class="form-label">Target Buy Price (₹)</label>
+            <input type="number" id="edit-prod-price" class="form-input" placeholder="119900" required />
+          </div>
+          <div class="form-field">
+            <label class="form-label">Booker Commission (₹)</label>
+            <input type="number" id="edit-prod-comm" class="form-input" placeholder="3000" required />
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 10px;">Save Product</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: GST Invoice Viewer (PDF & JPG) -->
+  <div class="modal-backdrop" id="modal-view-invoice">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title" id="preview-invoice-title">GST Invoice Attachment</div>
+        <button class="modal-close" onclick="closeModal('modal-view-invoice')">&times;</button>
+      </div>
+      <div id="preview-invoice-body" style="text-align: center; margin-bottom: 18px;"></div>
+      <div style="display:flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn btn-subtle" onclick="closeModal('modal-view-invoice')">Close</button>
+        <button class="btn btn-primary" id="btn-download-active-invoice">Download Invoice File</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
