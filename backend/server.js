@@ -15,7 +15,7 @@ const app = express();
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-key', 'X-API-KEY', 'Authorization']
+  allowedHeaders: ['Content-Type', 'x-api-key', 'X-API-KEY', 'x-session-token', 'Authorization']
 }));
 
 app.use(express.json({ limit: '20mb' }));
@@ -143,6 +143,23 @@ async function ensureSheetTab(tabName, headers) {
   }
 }
 
+async function deleteSheetRecords(tabName, columnIndex, ownerId) {
+  const [metadata, values] = await Promise.all([
+    sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID }),
+    sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tabName}!A:Z` })
+  ]);
+  const sheet = metadata.data.sheets.find(item => item.properties.title === tabName);
+  if (!sheet) return 0;
+  const rows = values.data.values || [];
+  const rowIndexes = rows.map((row, index) => ({ row, index })).filter(item => item.index > 0 && sameOwner(item.row[columnIndex], ownerId)).map(item => item.index).reverse();
+  if (rowIndexes.length === 0) return 0;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    resource: { requests: rowIndexes.map(index => ({ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: index, endIndex: index + 1 } } })) }
+  });
+  return rowIndexes.length;
+}
+
 // Resilient Auth Middleware (Checks headers + body + fallback default)
 function authenticate(req, res, next) {
   const token = req.headers['x-api-key'] || req.headers['X-API-KEY'] || req.body?.secretToken;
@@ -174,7 +191,7 @@ app.post('/api/auth/login', authenticate, async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ success: false, message: 'Username and password are required.' });
     if (username === MASTER_ADMIN_USERNAME && password === MASTER_ADMIN_PASSWORD && MASTER_ADMIN_ID) {
-      const user = { name: 'Master Admin', role: 'admin', adminId: MASTER_ADMIN_ID, customerId: null, isMaster: true };
+      const user = { name: 'Master Admin', username, role: 'admin', adminId: MASTER_ADMIN_ID, customerId: null, isMaster: true };
       return res.json({ success: true, user, sessionToken: issueSession(user) });
     }
 
@@ -183,7 +200,7 @@ app.post('/api/auth/login', authenticate, async (req, res) => {
       const adminData = adminSnapshot.docs[0].data();
       if (adminData.password !== password) return res.status(401).json({ success: false, message: 'Invalid credentials.' });
       if (adminData.active === false) return res.status(403).json({ success: false, message: 'This admin account is revoked.' });
-      const user = { name: adminData.name, role: 'admin', adminId: adminData.adminId || adminSnapshot.docs[0].id, customerId: null, isMaster: false };
+      const user = { name: adminData.name, username: adminData.username, role: 'admin', adminId: adminData.adminId || adminSnapshot.docs[0].id, customerId: null, isMaster: false };
       return res.json({ success: true, user, sessionToken: issueSession(user) });
     }
 
@@ -215,17 +232,24 @@ async function findUserInSheets(username, password) {
     const result = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tab}!A:Z` });
     const rows = sheetRowsToObjects(result.data.values || []);
     const record = rows.find(row => {
-      const recordUsername = row.Username || row['Customer ID'] || row.username || row.id;
-      const recordPassword = row.Password || row.password;
-      const active = row.Active === undefined || String(row.Active).toLowerCase() !== 'false';
-      return recordUsername === username && recordPassword === password && active;
+      const recordUsername = sheetField(row, ['Username', 'Admin Username', 'Booker ID', 'Customer ID', 'id']);
+      const recordPassword = sheetField(row, ['Password', 'Admin Password', 'Booker Password', 'password']);
+      const activeValue = sheetField(row, ['Active', 'Status']);
+      const active = !activeValue || activeValue.toLowerCase() !== 'false' && activeValue.toLowerCase() !== 'revoked' && activeValue.toLowerCase() !== 'inactive';
+      return recordUsername === String(username).trim() && recordPassword === String(password).trim() && active;
     });
     if (record) {
-      if (tab === 'Admins') return { name: record['Admin Name'] || record.name, role: 'admin', adminId: record['Admin ID'] || record.adminId, customerId: null, isMaster: false };
-      return { name: record['Full Name'] || record.name, role: 'customer', adminId: record['Admin ID'] || record.adminId, customerId: record['Customer ID'] || record.id, isMaster: false };
+      if (tab === 'Admins') return { name: sheetField(record, ['Admin Name', 'Full Name', 'Name', 'name']), username: sheetField(record, ['Username', 'Admin Username']), role: 'admin', adminId: sheetField(record, ['Admin ID', 'adminId', 'id']), customerId: null, isMaster: false };
+      return { name: sheetField(record, ['Full Name', 'Customer Name', 'Name', 'name']), role: 'customer', adminId: sheetField(record, ['Admin ID', 'adminId']), customerId: sheetField(record, ['Customer ID', 'Booker ID', 'id']), isMaster: false };
     }
   }
   return null;
+}
+
+function sheetField(record, names) {
+  const fields = Object.keys(record);
+  const field = fields.find(key => names.some(name => key.trim().toLowerCase() === name.toLowerCase()));
+  return field ? String(record[field] ?? '').trim() : '';
 }
 
 function requireMaster(req, res) {
@@ -255,8 +279,12 @@ function requireSession(req, res, next) {
 app.post('/api/orders/create', authenticate, requireSession, async (req, res) => {
   try {
     const { order } = req.body;
+    const actor = getSession(req)?.user;
     if (!order || typeof order !== 'object' || !order.id) {
       return res.status(400).json({ success: false, message: 'A valid order with an id is required.' });
+    }
+    if (!actor || (actor.role === 'admin' && !actor.isMaster && !sameOwner(order.adminId, actor.adminId)) || (actor.role === 'customer' && String(order.customerId || '').trim() !== String(actor.customerId || '').trim())) {
+      return res.status(403).json({ success: false, message: 'You can only create bookings for your own account.' });
     }
     await tryFirestore(
       () => db.collection('orders').doc(order.id).set(order),
@@ -340,6 +368,8 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
 app.post('/api/orders/status', authenticate, requireSession, async (req, res) => {
   try {
     const { orderId, status, settledAt } = req.body;
+    const actor = requireAdminSession(req, res);
+    if (!actor) return;
     if (!orderId || !status) {
       return res.status(400).json({ success: false, message: 'orderId and status are required.' });
     }
@@ -367,6 +397,35 @@ app.post('/api/orders/status', authenticate, requireSession, async (req, res) =>
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orders/approve', authenticate, requireSession, async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    const actor = requireAdminSession(req, res);
+    if (!actor || !orderId) return res.status(400).json({ success: false, message: 'An orderId and admin session are required.' });
+    const orderRef = db.collection('orders').doc(orderId);
+    let order;
+    try {
+      const orderSnapshot = await orderRef.get();
+      if (orderSnapshot.exists) order = orderSnapshot.data();
+    } catch (firestoreError) {
+      console.error('Firestore approval lookup failed; checking Sheets:', firestoreError.message);
+    }
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:L' });
+    const rows = sheetData.data.values || [];
+    const rowIndex = rows.findIndex(row => row[0] === orderId);
+    if (!order && rowIndex > 0) order = { adminId: rows[rowIndex][11], status: rows[rowIndex][9] };
+    if (!order) return res.status(404).json({ success: false, message: 'Booking not found.' });
+    if (!actor.isMaster && order.adminId !== actor.adminId) return res.status(403).json({ success: false, message: 'Only the owning admin can approve this booking.' });
+    await tryFirestore(() => orderRef.update({ status: 'Booked', approvedBy: actor.adminId, approvedAt: new Date().toISOString() }), `approve order ${orderId}`);
+    if (rowIndex > 0) {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!J${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [['Booked']] } });
+    }
+    res.json({ success: true, orderId, status: 'Booked' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -410,9 +469,15 @@ app.post('/api/customers/create', authenticate, requireSession, async (req, res)
     if (!customer || typeof customer !== 'object' || !customer.id) {
       return res.status(400).json({ success: false, message: 'A valid customer with an id is required.' });
     }
+    const customerId = String(customer.id).trim();
+    const existingCustomer = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Customers!A:A' }).catch(() => ({ data: { values: [] } }));
+    const duplicateInSheets = (existingCustomer.data.values || []).some(row => String(row[0] || '').trim().toLowerCase() === customerId.toLowerCase());
+    if (duplicateInSheets) return res.status(409).json({ success: false, message: `Booker ID ${customerId} already exists.` });
+    customer.id = customerId;
+    customer.username = customerId;
     await tryFirestore(
-      () => db.collection('customers').doc(customer.id).set(customer),
-      `save customer ${customer.id}`
+      () => db.collection('customers').doc(customerId).set(customer),
+      `save customer ${customerId}`
     );
 
     await ensureSheetTab('Customers', ['Customer ID', 'Full Name', 'Mobile', 'Password', 'Created By Admin', 'Admin ID', 'Active', 'Timestamp']);
@@ -429,10 +494,39 @@ app.post('/api/customers/create', authenticate, requireSession, async (req, res)
   }
 });
 
+app.post('/api/products/sync', authenticate, requireSession, async (req, res) => {
+  try {
+    const { product } = req.body;
+    const actor = requireAdminSession(req, res);
+    if (!actor) return;
+    if (!product || typeof product !== 'object' || !product.id || !product.name) {
+      return res.status(400).json({ success: false, message: 'A valid product with an id and name is required.' });
+    }
+    const productData = { ...product, adminId: actor.isMaster ? (product.adminId || '') : actor.adminId };
+    await tryFirestore(
+      () => db.collection('products').doc(productData.id).set(productData),
+      `save product ${productData.id}`
+    );
+    await ensureSheetTab('Products', ['Product ID', 'Product Name', 'Target Price', 'Commission', 'Admin ID', 'Active', 'Last Synced']);
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Products!A:A' });
+    const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === productData.id);
+    const values = [[productData.id, productData.name, productData.targetPrice || 0, productData.commission || 0, productData.adminId || '', productData.active !== false, new Date().toISOString()]];
+    if (rowIndex > 0) {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Products!A${rowIndex + 1}:G${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values } });
+    } else {
+      await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Products!A:G', valueInputOption: 'USER_ENTERED', resource: { values } });
+    }
+    res.json({ success: true, product: productData });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // 6. Sync Admin Profile
 app.post('/api/admin/sync', authenticate, requireSession, async (req, res) => {
   try {
     const { admin: adminData } = req.body;
+    if (!requireMaster(req, res)) return;
     if (!adminData || typeof adminData !== 'object' || !adminData.adminId) {
       return res.status(400).json({ success: false, message: 'A valid admin profile with an adminId is required.' });
     }
@@ -455,6 +549,31 @@ app.post('/api/admin/sync', authenticate, requireSession, async (req, res) => {
   }
 });
 
+app.post('/api/admin/profile', authenticate, requireSession, async (req, res) => {
+  try {
+    const { profile } = req.body;
+    const actor = requireAdminSession(req, res);
+    if (!actor) return;
+    if (!profile || profile.adminId !== actor.adminId || !profile.username || !profile.password) {
+      return res.status(400).json({ success: false, message: 'Only the signed-in admin can update their own profile.' });
+    }
+    const profileData = { adminId: actor.adminId, name: profile.name || actor.name, username: profile.username.trim(), password: profile.password, active: true };
+    await tryFirestore(() => db.collection('admins').doc(actor.adminId).set(profileData, { merge: true }), `update admin profile ${actor.adminId}`);
+    await ensureSheetTab('Admins', ['Admin ID', 'Admin Name', 'Username', 'Password', 'Active', 'Last Synced']);
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Admins!A:A' });
+    const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === actor.adminId);
+    const values = [[profileData.adminId, profileData.name, profileData.username, profileData.password, true, new Date().toISOString()]];
+    if (rowIndex > 0) {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Admins!A${rowIndex + 1}:F${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values } });
+    } else {
+      await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Admins!A:F', valueInputOption: 'USER_ENTERED', resource: { values } });
+    }
+    res.json({ success: true, profile: profileData });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 app.post('/api/admin/create', authenticate, requireSession, async (req, res) => {
   try {
     const { admin: adminData } = req.body;
@@ -462,7 +581,15 @@ app.post('/api/admin/create', authenticate, requireSession, async (req, res) => 
     if (!adminData || !adminData.adminId || !adminData.name || !adminData.username || !adminData.password) {
       return res.status(400).json({ success: false, message: 'adminId, name, username, and password are required.' });
     }
-    await db.collection('admins').doc(adminData.adminId).set(adminData);
+
+    let firestoreSaved = false;
+    try {
+      await db.collection('admins').doc(adminData.adminId).set(adminData);
+      firestoreSaved = true;
+    } catch (firestoreError) {
+      console.error('Firestore admin create failed; continuing with Sheets:', firestoreError.message);
+    }
+
     await ensureSheetTab('Admins', ['Admin ID', 'Admin Name', 'Username', 'Password', 'Active', 'Last Synced']);
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
@@ -470,7 +597,7 @@ app.post('/api/admin/create', authenticate, requireSession, async (req, res) => 
       valueInputOption: 'USER_ENTERED',
       resource: { values: [[adminData.adminId, adminData.name, adminData.username, adminData.password, adminData.active !== false, new Date().toISOString()]] }
     });
-    res.json({ success: true, admin: adminData });
+    res.json({ success: true, admin: adminData, firestoreSaved, sheetsSaved: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -488,6 +615,36 @@ app.post('/api/admin/status', authenticate, requireSession, async (req, res) => 
   }
 });
 
+app.post('/api/admin/delete', authenticate, requireSession, async (req, res) => {
+  try {
+    if (!requireMaster(req, res)) return;
+    const adminId = String(req.body.adminId || '').trim();
+    if (!adminId || sameOwner(adminId, MASTER_ADMIN_ID)) return res.status(400).json({ success: false, message: 'A subordinate adminId is required.' });
+    const collections = ['admins', 'customers', 'products', 'orders'];
+    let deletedFirestore = 0;
+    for (const collection of collections) {
+      const snapshot = await db.collection(collection).where('adminId', '==', adminId).get().catch(() => ({ empty: true, docs: [] }));
+      const refs = snapshot.docs.map(doc => doc.ref);
+      if (collection === 'admins') refs.push(db.collection('admins').doc(adminId));
+      for (let index = 0; index < refs.length; index += 400) {
+        const batch = db.batch();
+        refs.slice(index, index + 400).forEach(ref => batch.delete(ref));
+        await batch.commit().catch(() => {});
+        deletedFirestore += refs.slice(index, index + 400).length;
+      }
+    }
+    const deletedSheets = (await Promise.all([
+      deleteSheetRecords('Admins', 0, adminId),
+      deleteSheetRecords('Customers', 5, adminId),
+      deleteSheetRecords('Products', 4, adminId),
+      deleteSheetRecords('Orders', 11, adminId)
+    ])).reduce((total, count) => total + count, 0);
+    res.json({ success: true, adminId, deletedFirestore, deletedSheets });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 app.post('/api/customers/status', authenticate, requireSession, async (req, res) => {
   try {
     const { customerId, active } = req.body;
@@ -497,7 +654,7 @@ app.post('/api/customers/status', authenticate, requireSession, async (req, res)
     const customerSnapshot = await customerRef.get();
     if (!customerSnapshot.exists) return res.status(404).json({ success: false, message: 'Booker not found.' });
     const customer = customerSnapshot.data();
-    if (actor.adminId !== MASTER_ADMIN_ID && customer.adminId !== actor.adminId) {
+    if (!sameOwner(actor.adminId, MASTER_ADMIN_ID) && !sameOwner(customer.adminId, actor.adminId)) {
       return res.status(403).json({ success: false, message: 'Only the owning admin or Master Admin can change this booker.' });
     }
     await customerRef.update({ active: active === true });
@@ -515,6 +672,15 @@ function sheetRowsToObjects(values = []) {
   );
 }
 
+function sameOwner(left, right) {
+  const normalize = value => String(value || '').replace(/[-_\s]/g, '').toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
+function ownedBy(record, adminId) {
+  return sameOwner(record.adminId || record['Admin ID'], adminId);
+}
+
 function numberOrZero(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -522,12 +688,18 @@ function numberOrZero(value) {
 
 app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res) => {
   try {
+    const actor = getSession(req).user;
     const tabs = ['Admins', 'Customers', 'Products', 'Orders'];
     const response = {};
     for (const tab of tabs) {
       try {
         const result = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tab}!A:Z` });
-        response[tab.toLowerCase()] = sheetRowsToObjects(result.data.values || []);
+        const records = sheetRowsToObjects(result.data.values || []);
+        response[tab.toLowerCase()] = actor.isMaster ? records : tab === 'Admins'
+          ? records.filter(record => ownedBy(record, actor.adminId))
+          : records.filter(record => actor.role === 'customer'
+            ? String(record['Customer ID'] || record.customerId || record.id || '').trim() === actor.customerId
+            : ownedBy(record, actor.adminId));
       } catch (error) {
         if (error.code === 400 || error.code === 404) {
           response[tab.toLowerCase()] = [];
@@ -544,18 +716,22 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
 
 app.get('/api/admin/data/export', authenticate, requireSession, async (req, res) => {
   try {
+    const actor = getSession(req).user;
     const [admins, customers, products, orders] = await Promise.all(
       ['admins', 'customers', 'products', 'orders'].map(collection => db.collection(collection).get())
     );
     const collectionData = snapshot => snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const scope = records => actor.isMaster ? records : records.filter(record => actor.role === 'customer'
+      ? String(record.customerId || '').trim() === String(actor.customerId || '').trim()
+      : sameOwner(record.adminId, actor.adminId));
     res.json({
       success: true,
       exportedAt: new Date().toISOString(),
       data: {
-        admins: collectionData(admins),
-        customers: collectionData(customers),
-        products: collectionData(products),
-        orders: collectionData(orders)
+        admins: actor.isMaster ? collectionData(admins) : collectionData(admins).filter(record => sameOwner(record.adminId, actor.adminId)),
+        customers: scope(collectionData(customers)),
+        products: scope(collectionData(products)),
+        orders: scope(collectionData(orders))
       }
     });
   } catch (err) {

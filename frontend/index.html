@@ -55,7 +55,7 @@
         </div>
         <div class="form-field">
           <label class="form-label">Password</label>
-          <input type="password" id="auth-password" class="form-input" autocomplete="current-password" required />
+          <div class="password-field"><input type="password" id="auth-password" class="form-input" autocomplete="current-password" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('auth-password', this)" aria-label="Show password">&#128065;</button></div>
         </div>
         <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px; margin-top: 6px;">Sign In to Workspace</button>
       </form>
@@ -144,6 +144,7 @@
             <input type="text" id="order-search" class="input-search" placeholder="Search ID, model, customer, card..." oninput="debouncedRenderOrders()" />
             <select id="order-status-filter" class="select-filter" onchange="renderOrdersTable()">
               <option value="ALL">All Statuses</option>
+              <option value="Pending Approval">Pending Approval</option>
               <option value="Booked">Booked</option>
               <option value="In Process">In Process</option>
               <option value="Out for Delivery">Out for Delivery</option>
@@ -276,9 +277,9 @@
       <section id="tab-settings" class="view-content">
         <div class="settings-grid">
           
-          <div class="kpi-card">
-            <h3>🔐 Master Admin Security Profile</h3>
-            <p>Admin credentials sync with Google Sheets and backend.</p>
+          <div class="kpi-card" id="master-security-card">
+            <h3>🔐 Admin Security Profile</h3>
+            <p>Update your own credentials. The Owner can also manage admin accounts.</p>
             <form onsubmit="handleSaveAdminProfile(event)">
               <div class="form-grid two-col">
                 <div class="form-field">
@@ -297,7 +298,7 @@
                 </div>
                 <div class="form-field">
                   <label class="form-label">Password</label>
-                  <input type="password" id="cfg-admin-pass" class="form-input" required />
+                  <div class="password-field"><input type="password" id="cfg-admin-pass" class="form-input" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('cfg-admin-pass', this)" aria-label="Show password">&#128065;</button></div>
                 </div>
               </div>
               <button type="submit" class="btn btn-primary btn-sm" style="margin-top: 4px;">Update & Sync Profile</button>
@@ -313,10 +314,10 @@
               <button class="btn btn-danger btn-sm" onclick="resetLocalAppData()">Reset Local Data</button>
             </div>
             <p id="data-management-status" style="margin-top:10px; color:var(--text-muted);">IndexedDB is the local POS store.</p>
-            <button class="btn btn-primary btn-sm" onclick="openCreateAdminModal()">+ Add Admin Account</button>
+            <button id="add-admin-button" class="btn btn-primary btn-sm" onclick="openCreateAdminModal()">+ Add Admin Account</button>
           </div>
 
-          <div class="kpi-card">
+          <div class="kpi-card" id="admin-access-card">
             <h3>Admin Access Control</h3>
             <p>Only the Master Admin can revoke or activate subordinate admins.</p>
             <div id="admin-access-list"></div>
@@ -326,6 +327,11 @@
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
               <h3>📱 Product Catalog & Commissions</h3>
               <button class="btn btn-primary btn-sm" onclick="openNewProductModal()">+ Add Model</button>
+            </div>
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+              <button class="btn btn-subtle btn-sm" onclick="exportProductCatalogCSV()">Download Catalog</button>
+              <button class="btn btn-subtle btn-sm" onclick="document.getElementById('product-catalog-upload').click()">Upload Catalog</button>
+              <input id="product-catalog-upload" type="file" accept=".csv,text/csv" style="display:none" onchange="handleProductCatalogUpload(this)" />
             </div>
             <div id="settings-product-list" style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto;"></div>
           </div>
@@ -451,7 +457,7 @@
         <div class="form-grid two-col">
           <div class="form-field">
             <label class="form-label">Buying Platform</label>
-            <select id="modal-order-platform" class="form-select" required>
+            <select id="modal-order-platform" class="form-select" onchange="handleBookingOtherField('platform')" required>
               <option value="Flipkart">Flipkart</option>
               <option value="Amazon">Amazon</option>
               <option value="Reliance Digital">Reliance Digital</option>
@@ -460,10 +466,12 @@
               <option value="Apple Store">Apple Store</option>
               <option value="Other">Other</option>
             </select>
+            <input type="text" id="modal-order-platform-other" class="form-input" placeholder="Enter platform / merchant" style="display:none; margin-top:6px;" />
           </div>
           <div class="form-field">
             <label class="form-label">Product Model</label>
-            <select id="modal-order-product" class="form-select" onchange="autoFillOrderPrice()" required></select>
+            <select id="modal-order-product" class="form-select" onchange="autoFillOrderPrice(); handleBookingOtherField('product')" required></select>
+            <input type="text" id="modal-order-product-other" class="form-input" placeholder="Enter device model" style="display:none; margin-top:6px;" />
           </div>
         </div>
 
@@ -669,7 +677,7 @@
         <div class="form-field"><label class="form-label">Admin Name</label><input type="text" id="new-admin-name" class="form-input" required /></div>
         <div class="form-grid two-col">
           <div class="form-field"><label class="form-label">Username</label><input type="text" id="new-admin-username" class="form-input" required /></div>
-          <div class="form-field"><label class="form-label">Password</label><input type="password" id="new-admin-password" class="form-input" required /></div>
+          <div class="form-field"><label class="form-label">Password</label><div class="password-field"><input type="password" id="new-admin-password" class="form-input" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('new-admin-password', this)" aria-label="Show password">&#128065;</button></div></div>
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%; padding:11px;">Create Admin & Sync</button>
       </form>

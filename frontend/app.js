@@ -40,11 +40,15 @@ const API_CONFIG = {
 };
 
 const STORAGE_DB_NAME = 'devicetrade-local';
-const STORAGE_DB_VERSION = 1;
+const STORAGE_DB_VERSION = 2;
 const STORAGE_STATE_STORE = 'state';
 const STORAGE_QUEUE_STORE = 'outbox';
 let storageDb = null;
 let offlineOutbox = [];
+
+function sameAdminId(left, right) {
+  return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
+}
 
 function openStorageDb() {
   return new Promise((resolve, reject) => {
@@ -228,14 +232,14 @@ async function syncFromGoogleSheets() {
     }
     if (customers.length > 0) {
       AppState.customers = customers.map(customer => ({
-        id: customer['Customer ID'] || customer.id,
+        id: String(customer['Customer ID'] || customer.id || '').trim(),
         username: customer['Customer ID'] || customer.username || customer.id,
         password: customer.Password || customer.password || '',
         name: customer['Full Name'] || customer.name || '',
         mobile: customer.Mobile || customer.mobile || '',
         createdByAdmin: customer['Created By Admin'] || customer.createdByAdmin || AppState.adminProfile.name,
         totalSettled: csvOrNumber(customer.totalSettled),
-        adminId: customer['Admin ID'] || customer.adminId || AppState.adminProfile.adminId,
+        adminId: String(customer['Admin ID'] || customer.adminId || AppState.adminProfile.adminId || '').trim(),
         active: customer.Active !== 'false' && customer.active !== false
       })).filter(customer => customer.id);
     }
@@ -245,7 +249,7 @@ async function syncFromGoogleSheets() {
         name: product['Product Name'] || product.name || '',
         targetPrice: csvOrNumber(product['Target Price'] || product.targetPrice),
         commission: csvOrNumber(product.Commission || product.commission)
-      })).filter(product => product.name);
+      })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || product.adminId === AppState.currentUser?.adminId));
     }
     if (orders.length > 0) {
       AppState.orders = orders.map(order => normalizeOrder({
@@ -385,9 +389,21 @@ async function triggerAutoCloudSync(actionType, data = {}) {
   } else if (actionType === "ADMIN_STATUS_CHANGED") {
     endpoint = '/admin/status';
     payload = { adminId: data.adminId, active: data.active, actorAdminId: AppState.currentUser?.adminId };
+  } else if (actionType === "ADMIN_DELETED") {
+    endpoint = '/admin/delete';
+    payload = { adminId: data.adminId };
   } else if (actionType === "CUSTOMER_STATUS_CHANGED") {
     endpoint = '/customers/status';
     payload = { customerId: data.customerId, active: data.active, actorAdminId: AppState.currentUser?.adminId };
+  } else if (actionType === "PRODUCT_SYNC") {
+    endpoint = '/products/sync';
+    payload = { product: data.product };
+  } else if (actionType === "ORDER_APPROVED") {
+    endpoint = '/orders/approve';
+    payload = { orderId: data.orderId };
+  } else if (actionType === "ADMIN_PROFILE_SYNC") {
+    endpoint = '/admin/profile';
+    payload = { profile: data.profile };
   }
 
   if (!endpoint) return;
@@ -491,7 +507,7 @@ function getVisibleOrders() {
     return AppState.orders.filter(order => order.customerId === AppState.currentUser.customerId);
   }
   if (AppState.currentUser.isMaster) return AppState.orders;
-  return AppState.orders.filter(order => order.adminId === AppState.currentUser.adminId);
+  return AppState.orders.filter(order => sameAdminId(order.adminId, AppState.currentUser.adminId));
 }
 
 function getOrderProfit(order) {
@@ -649,6 +665,14 @@ function selectAuthRole(role) {
   document.getElementById('auth-password').value = '';
 }
 
+function togglePasswordVisibility(inputId, button) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  button.setAttribute('aria-label', visible ? 'Show password' : 'Hide password');
+}
+
 async function executeLogin(e) {
   e.preventDefault();
   await appStateReady;
@@ -659,6 +683,7 @@ async function executeLogin(e) {
     const result = await dispatchToBackend('/auth/login', { username: u, password: p });
     AppState.currentUser = result.user;
     AppState.sessionToken = result.sessionToken;
+    await syncFromGoogleSheets().catch(error => console.warn('Unable to refresh cloud data after login:', error.message));
     if (result.user.isMaster) {
       AppState.adminProfile = { ...AppState.adminProfile, adminId: result.user.adminId, name: result.user.name, active: true };
       if (!AppState.admins.some(adminItem => adminItem.adminId === result.user.adminId)) AppState.admins.unshift(AppState.adminProfile);
@@ -672,6 +697,14 @@ async function executeLogin(e) {
   document.getElementById('view-app-main').style.display = 'flex';
   document.getElementById('badge-active-role').textContent = AppState.currentUser.role === 'admin' ? 'Master Admin' : 'Booker Portal';
   document.getElementById('user-display-label').textContent = AppState.currentUser.name;
+  if (AppState.currentUser.role === 'admin') {
+    document.getElementById('cfg-admin-id').value = AppState.currentUser.adminId;
+    document.getElementById('cfg-admin-name').value = AppState.currentUser.name || '';
+    document.getElementById('cfg-admin-user').value = AppState.currentUser.username || '';
+    document.getElementById('master-security-card').querySelector('.form-label').textContent = 'Admin ID';
+    document.getElementById('add-admin-button').style.display = AppState.currentUser.isMaster ? '' : 'none';
+    document.getElementById('admin-access-card').style.display = AppState.currentUser.isMaster ? '' : 'none';
+  }
   if (AppState.currentUser.role === 'admin' && AppState.currentUser.isMaster) {
     document.getElementById('cfg-admin-id').value = AppState.adminProfile.adminId;
     document.getElementById('cfg-admin-name').value = AppState.adminProfile.name;
@@ -691,17 +724,33 @@ function logoutApp() {
 
 function handleSaveAdminProfile(e) {
   e.preventDefault();
-  AppState.adminProfile.name = document.getElementById('cfg-admin-name').value.trim();
-  AppState.adminProfile.username = document.getElementById('cfg-admin-user').value.trim();
-  AppState.adminProfile.password = document.getElementById('cfg-admin-pass').value.trim();
-  AppState.adminProfile.active = true;
-  triggerAutoCloudSync('ADMIN_SYNC');
-  alert('Admin Profile updated and synchronized.');
+  const profile = {
+    adminId: AppState.currentUser.adminId,
+    name: document.getElementById('cfg-admin-name').value.trim(),
+    username: document.getElementById('cfg-admin-user').value.trim(),
+    password: document.getElementById('cfg-admin-pass').value.trim(),
+    active: true
+  };
+  if (AppState.currentUser.isMaster) {
+    AppState.adminProfile = { ...AppState.adminProfile, ...profile };
+    AppState.currentUser = { ...AppState.currentUser, name: profile.name, username: profile.username };
+    triggerAutoCloudSync('ADMIN_SYNC');
+  } else {
+    AppState.currentUser = { ...AppState.currentUser, name: profile.name, username: profile.username };
+    triggerAutoCloudSync('ADMIN_PROFILE_SYNC', { profile });
+  }
+  alert('Admin profile update submitted.');
 }
 
 function openCreateAdminModal() {
   if (!AppState.currentUser?.isMaster) return;
-  document.getElementById('new-admin-id').value = `ADM-${String(AppState.admins.length + 1).padStart(3, '0')}`;
+  const adminNumbers = AppState.admins.map(item => Number(String(item.adminId).match(/^adm-?(\d{3})$/i)?.[1] || 0));
+  const nextAdminNumber = Math.max(0, ...adminNumbers) + 1;
+  let nextAdminId = `adm${String(nextAdminNumber).padStart(3, '0')}`;
+  while (AppState.admins.some(item => String(item.adminId).toLowerCase() === nextAdminId)) {
+    nextAdminId = `adm${String(Number(nextAdminId.slice(3)) + 1).padStart(3, '0')}`;
+  }
+  document.getElementById('new-admin-id').value = nextAdminId;
   document.getElementById('new-admin-name').value = '';
   document.getElementById('new-admin-username').value = '';
   document.getElementById('new-admin-password').value = '';
@@ -746,7 +795,7 @@ function buildNavigation() {
     { id: 'tab-delivery', label: 'Deliveries', icon: '🚚', adminOnly: false },
     { id: 'tab-customers', label: 'Bookers', icon: '👥', adminOnly: true },
     { id: 'tab-invoices', label: 'GST Bills', icon: '📄', adminOnly: false },
-    { id: 'tab-settings', label: 'Settings', icon: '⚙️', adminOnly: true, masterOnly: true }
+    { id: 'tab-settings', label: 'Settings', icon: '⚙️', adminOnly: true }
   ];
 
   tabs.filter(t => (!t.adminOnly || AppState.currentUser.role === 'admin') && (!t.masterOnly || AppState.currentUser.isMaster)).forEach((item, idx) => {
@@ -909,7 +958,8 @@ function renderOrdersTable() {
         <td><span class="pill ${o.status === 'Settled' ? 'pill-green' : 'pill-amber'}">${o.status}</span></td>
         <td>
           <div style="display:flex; gap:6px;">
-            ${!o.delivery?.submitted ? `<button class="btn btn-subtle btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Delivery & GST</button>` : ''}
+            ${isAdmin && o.status === 'Pending Approval' ? `<button class="btn btn-primary btn-sm" onclick="approveBooking('${o.id}')">Approve</button>` : ''}
+            ${o.status !== 'Pending Approval' && !o.delivery?.submitted ? `<button class="btn btn-subtle btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Delivery & GST</button>` : ''}
             ${isAdmin && o.status === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
             ${isAdmin && o.status === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
           </div>
@@ -917,6 +967,16 @@ function renderOrdersTable() {
       </tr>
     `;
   });
+}
+
+function approveBooking(orderId) {
+  const order = AppState.orders.find(item => item.id === orderId);
+  if (!order || AppState.currentUser?.role !== 'admin' || !confirm(`Approve booking ${orderId}?`)) return;
+  order.status = 'Booked';
+  order.approvedBy = AppState.currentUser.adminId;
+  order.approvedAt = new Date().toISOString();
+  renderAllViews();
+  triggerAutoCloudSync('ORDER_APPROVED', { orderId });
 }
 
 function renderDeliveryTable() {
@@ -978,7 +1038,7 @@ function renderCustomersTable() {
 
   const customers = AppState.currentUser.isMaster
     ? AppState.customers
-    : AppState.customers.filter(customer => customer.adminId === AppState.currentUser.adminId);
+    : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
   customers.forEach(c => {
     const cOrders = AppState.orders.filter(o => o.customerId === c.id);
     if (filterState !== 'ALL' && !cOrders.some(o => o.status === filterState)) return;
@@ -1024,9 +1084,20 @@ function renderAdminAccessTable() {
     <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; border-bottom:1px solid var(--border-subtle); padding:8px 0;">
       <span><strong>${admin.adminId}</strong> ${admin.name || ''}<br /><small>${admin.username}</small></span>
       <span><span class="pill ${admin.active === false ? 'pill-amber' : 'pill-green'}">${admin.active === false ? 'Revoked' : 'Active'}</span>
-      ${admin.adminId === masterId ? '<span class="pill pill-indigo">Master</span>' : `<button class="btn ${admin.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setAdminActive('${admin.adminId}', ${admin.active === false})">${admin.active === false ? 'Activate' : 'Revoke'}</button>`}</span>
+      ${admin.adminId === masterId ? '<span class="pill pill-indigo">Master</span>' : `<button class="btn ${admin.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setAdminActive('${admin.adminId}', ${admin.active === false})">${admin.active === false ? 'Activate' : 'Revoke'}</button><button class="btn btn-danger btn-sm" onclick="deleteAdminAndData('${admin.adminId}')">Delete</button>`}</span>
     </div>
   `).join('') || '<span style="color:var(--text-muted);">No configured admins.</span>';
+}
+
+function deleteAdminAndData(adminId) {
+  if (!AppState.currentUser?.isMaster || !confirm(`Delete ${adminId} and all of its bookers, products, and bookings? This cannot be undone.`)) return;
+  AppState.admins = AppState.admins.filter(admin => !sameAdminId(admin.adminId, adminId));
+  AppState.customers = AppState.customers.filter(customer => !sameAdminId(customer.adminId, adminId));
+  AppState.products = AppState.products.filter(product => !sameAdminId(product.adminId, adminId));
+  AppState.orders = AppState.orders.filter(order => !sameAdminId(order.adminId, adminId));
+  persistLocalState();
+  renderAllViews();
+  triggerAutoCloudSync('ADMIN_DELETED', { adminId });
 }
 
 function setAdminActive(adminId, active) {
@@ -1097,7 +1168,8 @@ function renderProductListSettings() {
   const container = document.getElementById('settings-product-list');
   if (!container) return;
   container.innerHTML = '';
-  AppState.products.forEach(p => {
+  const products = AppState.currentUser?.isMaster ? AppState.products : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId));
+  products.forEach(p => {
     container.innerHTML += `
       <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); padding:8px 12px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">
         <div><strong>${p.name}</strong><br/><span style="color:var(--text-muted); font-size:0.72rem;">Buy: ₹${p.targetPrice.toLocaleString()}</span></div>
@@ -1111,15 +1183,16 @@ function renderProductListSettings() {
 }
 
 // 8. Workflows (Booking, Delivery, Settlement)
-function openNewOrderModal() {
+async function openNewOrderModal() {
+  await syncFromGoogleSheets().catch(error => console.warn('Unable to refresh bookers before booking:', error.message));
   const pSelect = document.getElementById('modal-order-product');
-  pSelect.innerHTML = AppState.products.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('');
+  pSelect.innerHTML = `${AppState.products.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('')}<option value="Other">Other device</option>`;
 
   const cSelect = document.getElementById('modal-order-customer-select');
   if (AppState.currentUser.role === 'admin') {
     const availableCustomers = AppState.currentUser.isMaster
       ? AppState.customers
-      : AppState.customers.filter(customer => customer.adminId === AppState.currentUser.adminId);
+      : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
     cSelect.innerHTML = availableCustomers.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join('');
   } else {
     cSelect.innerHTML = `<option value="${AppState.currentUser.customerId}">${AppState.currentUser.name}</option>`;
@@ -1129,7 +1202,19 @@ function openNewOrderModal() {
   document.getElementById('modal-order-card').value = '';
   document.getElementById('modal-order-paid').value = AppState.products[0].targetPrice;
   document.getElementById('modal-order-advance').value = '0';
+  document.getElementById('modal-order-platform-other').value = '';
+  document.getElementById('modal-order-platform-other').style.display = 'none';
+  document.getElementById('modal-order-product-other').value = '';
+  document.getElementById('modal-order-product-other').style.display = 'none';
   openModal('modal-new-order');
+}
+
+function handleBookingOtherField(type) {
+  const field = document.getElementById(`modal-order-${type}-other`);
+  const select = document.getElementById(`modal-order-${type}`);
+  if (!field || !select) return;
+  field.style.display = select.value === 'Other' ? 'block' : 'none';
+  field.required = select.value === 'Other';
 }
 
 function autoFillOrderPrice() {
@@ -1143,7 +1228,10 @@ function handleCreateBooking(e) {
   const pid = document.getElementById('modal-order-product').value;
   const prod = AppState.products.find(p => p.id === pid);
   const custId = document.getElementById('modal-order-customer-select').value;
-  const cust = AppState.customers.find(c => c.id === custId);
+  const cust = AppState.customers.find(c => String(c.id).trim() === String(custId).trim()) ||
+    (AppState.currentUser.role === 'customer' && String(AppState.currentUser.customerId).trim() === String(custId).trim()
+      ? { id: AppState.currentUser.customerId, name: AppState.currentUser.name, adminId: AppState.currentUser.adminId }
+      : null);
   if (!cust) {
     alert('Create or select a valid booker account first.');
     return;
@@ -1154,18 +1242,22 @@ function handleCreateBooking(e) {
 
   const newOrder = {
     id: document.getElementById('modal-order-id').value.trim(),
-    platform: document.getElementById('modal-order-platform').value,
+    platform: document.getElementById('modal-order-platform').value === 'Other'
+      ? document.getElementById('modal-order-platform-other').value.trim()
+      : document.getElementById('modal-order-platform').value,
     customerId: cust.id,
     adminId: AppState.currentUser.adminId || AppState.adminProfile.adminId,
     customerName: cust.name,
-    productModel: prod ? prod.name : 'Custom Device',
+    productModel: document.getElementById('modal-order-product').value === 'Other'
+      ? document.getElementById('modal-order-product-other').value.trim()
+      : (prod ? prod.name : 'Custom Device'),
     cardLast4: document.getElementById('modal-order-card').value.trim(),
     amountPaid: paid,
     payableAmount: paid + comm,
     advancePaid: adv,
     settledAmount: 0,
     profit: comm,
-    status: 'Booked',
+    status: AppState.currentUser.role === 'customer' ? 'Pending Approval' : 'Booked',
     isToday: false,
     createdAt: new Date().toISOString().slice(0, 10),
     settledAt: null,
@@ -1308,7 +1400,19 @@ function handleExecuteSettlement(e) {
 
 // 9. Modals, Lifetime Drilldown & Out For Delivery Today
 function openCreateCustomerModal() {
-  document.getElementById('new-cust-id').value = `CUST-${1000 + AppState.customers.length + 1}`;
+  const adminDigits = String(AppState.currentUser.adminId).match(/(?:adm-?)(\d{3})$/i)?.[1] || '000';
+  const prefix = adminDigits.slice(-2);
+  const customerNumbers = AppState.customers
+    .map(customer => String(customer.id).match(new RegExp(`^cust${prefix}(\\d{2})$`, 'i')))
+    .filter(Boolean)
+    .map(match => Number(match[1]));
+  let nextSequence = Math.max(0, ...customerNumbers) + 1;
+  let nextCustomerId = `cust${prefix}${String(nextSequence).padStart(2, '0')}`;
+  while (AppState.customers.some(customer => String(customer.id).toLowerCase() === nextCustomerId)) {
+    nextSequence += 1;
+    nextCustomerId = `cust${prefix}${String(nextSequence).padStart(2, '0')}`;
+  }
+  document.getElementById('new-cust-id').value = nextCustomerId;
   document.getElementById('new-cust-name').value = '';
   document.getElementById('new-cust-mobile').value = '';
   document.getElementById('new-cust-password').value = `dt@${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1463,13 +1567,48 @@ function handleSaveProduct(e) {
       p.commission = commission;
     }
   } else {
-    AppState.products.push({ id: `p_${Date.now()}`, name, targetPrice, commission });
+    AppState.products.push({ id: `p_${Date.now()}`, name, targetPrice, commission, adminId: AppState.currentUser.adminId, active: true });
   }
+
+  const savedProduct = AppState.products.find(item => item.id === (id || AppState.products[AppState.products.length - 1].id));
+  if (savedProduct) triggerAutoCloudSync('PRODUCT_SYNC', { product: savedProduct });
 
   closeModal('modal-edit-product');
   persistLocalState();
   renderProductListSettings();
   alert('Product catalog updated.');
+}
+
+function exportProductCatalogCSV() {
+  const products = AppState.products.filter(product => AppState.currentUser?.isMaster || !product.adminId || product.adminId === AppState.currentUser?.adminId);
+  const csv = ['Product ID,Product Name,Target Price,Commission,Admin ID', ...products.map(product =>
+    [product.id, product.name, product.targetPrice, product.commission, product.adminId || ''].map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')
+  )].join('\n');
+  triggerBlobDownload(csv, 'Product_Catalog.csv', 'text/csv;charset=utf-8;');
+}
+
+function handleProductCatalogUpload(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = String(reader.result || '').split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return alert('Catalog CSV must contain a header and at least one product.');
+    lines.slice(1).forEach(line => {
+      const values = line.split(',').map(value => value.trim().replace(/^"|"$/g, '').replaceAll('""', '"'));
+      const [id, name, targetPrice, commission] = values;
+      if (!name) return;
+      const product = { id: id || `p_${Date.now()}_${Math.random().toString(36).slice(2)}`, name, targetPrice: csvOrNumber(targetPrice), commission: csvOrNumber(commission), adminId: AppState.currentUser.adminId, active: true };
+      const existing = AppState.products.find(item => item.id === product.id);
+      if (existing) Object.assign(existing, product); else AppState.products.push(product);
+      triggerAutoCloudSync('PRODUCT_SYNC', { product });
+    });
+    persistLocalState();
+    renderProductListSettings();
+    alert('Product catalog uploaded and queued for sync.');
+    input.value = '';
+  };
+  reader.readAsText(file);
 }
 
 // 10. CSV Exports & Downloads
