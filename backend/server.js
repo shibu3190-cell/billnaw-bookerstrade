@@ -341,13 +341,23 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       return res.status(400).json({ success: false, message: 'orderId and delivery details are required.' });
     }
 
+    const actor = getSession(req).user;
+    const orderRef = db.collection('orders').doc(orderId);
+    const orderSnapshot = await orderRef.get();
+    if (!orderSnapshot.exists) return res.status(404).json({ success: false, message: 'Booking not found.' });
+    const existingOrder = orderSnapshot.data();
+    const ownsOrder = actor.isMaster || (actor.role === 'admin'
+      ? sameOwner(existingOrder.adminId, actor.adminId)
+      : String(existingOrder.customerId || '').trim() === String(actor.customerId || '').trim());
+    if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only edit your own booking.' });
+
     const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId);
     const persistedGstDetails = uploadedInvoice.gstDetails?.fileData === ''
       ? uploadedInvoice.gstDetails
       : (uploadedInvoice.gstDetails || null);
 
     await tryFirestore(
-      () => db.collection('orders').doc(orderId).update({
+      () => orderRef.update({
         delivery,
         gstDetails: persistedGstDetails,
         status: 'Out for Delivery',
@@ -355,6 +365,15 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       }),
       `update delivery ${orderId}`
     );
+
+    const previousFileId = existingOrder.gstDetails?.fileId;
+    const replacementFileId = persistedGstDetails?.fileId;
+    if (previousFileId && replacementFileId && previousFileId !== replacementFileId) {
+      await db.collection('invoiceFiles').doc(previousFileId).delete().catch(() => {});
+      if (existingOrder.gstDetails.storagePath) {
+        await storageBucket.file(existingOrder.gstDetails.storagePath).delete({ ignoreNotFound: true }).catch(() => {});
+      }
+    }
 
     await ensureSheetTab('Deliveries_OTP', [
       'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
@@ -742,9 +761,7 @@ app.get('/api/admin/data/export', authenticate, requireSession, async (req, res)
     );
     const collectionData = snapshot => snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const scope = records => actor.isMaster ? records : records.filter(record => actor.role === 'customer'
-      ? (record.collection === 'products'
-        ? sameOwner(record.adminId, actor.adminId)
-        : String(record.customerId || '').trim() === String(actor.customerId || '').trim())
+      ? String(record.customerId || record.id || '').trim() === String(actor.customerId || '').trim()
       : sameOwner(record.adminId, actor.adminId));
     const customerProducts = collectionData(products);
     const customerScopedProducts = actor.role === 'customer' && !actor.isMaster

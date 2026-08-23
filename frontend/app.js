@@ -219,7 +219,7 @@ async function syncCloudData(showResult = false) {
     const products = data.products || [];
     const orders = data.orders || [];
 
-    if (admins.length > 0) {
+    if (AppState.currentUser?.role === 'admin' && admins.length > 0) {
       AppState.admins = admins.map(importedAdmin => ({
         adminId: importedAdmin['Admin ID'] || importedAdmin.adminId,
         name: importedAdmin['Admin Name'] || importedAdmin.name || '',
@@ -235,7 +235,7 @@ async function syncCloudData(showResult = false) {
         password: importedAdmin.Password || AppState.adminProfile.password
       };
     }
-    if (customers.length > 0) {
+    if (AppState.currentUser?.role === 'admin' || AppState.currentUser?.role === 'customer') {
       AppState.customers = customers.map(customer => ({
         id: String(customer['Customer ID'] || customer.id || '').trim(),
         username: customer['Customer ID'] || customer.username || customer.id,
@@ -248,7 +248,7 @@ async function syncCloudData(showResult = false) {
         active: customer.Active !== 'false' && customer.active !== false
       })).filter(customer => customer.id);
     }
-    if (products.length > 0) {
+    if (AppState.currentUser) {
       AppState.products = products.map(product => ({
         id: product['Product ID'] || product.id || `sheet_${Date.now()}_${Math.random()}`,
         name: product['Product Name'] || product.name || '',
@@ -257,7 +257,7 @@ async function syncCloudData(showResult = false) {
         adminId: String(product['Admin ID'] || product.adminId || '').trim()
       })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || sameAdminId(product.adminId, AppState.currentUser?.adminId)));
     }
-    if (orders.length > 0) {
+    if (AppState.currentUser) {
       AppState.orders = orders.map(order => normalizeOrder({
         id: order['Order ID'] || order.id,
         platform: order.Platform || order.platform || 'Other',
@@ -269,6 +269,7 @@ async function syncCloudData(showResult = false) {
         payableAmount: csvOrNumber(order['Payable Due'] || order.payableAmount),
         advancePaid: csvOrNumber(order['Advance Paid'] || order.advancePaid),
         settledAmount: csvOrNumber(order.settledAmount),
+        profit: csvOrNumber(order.Profit || order.profit || AppState.products.find(product => product.name === (order['Product Model'] || order.productModel))?.commission),
         status: order.Status || order.status || 'Booked',
         createdAt: order.Date || order.createdAt || new Date().toISOString().slice(0, 10),
         adminId: order['Admin ID'] || order.adminId || AppState.adminProfile.adminId,
@@ -550,7 +551,10 @@ function getVisibleOrders() {
 }
 
 function getOrderProfit(order) {
-  return csvOrNumber(order.profit);
+  const storedProfit = csvOrNumber(order.profit);
+  if (storedProfit > 0) return storedProfit;
+  const product = AppState.products.find(item => item.name === order.productModel);
+  return csvOrNumber(product?.commission);
 }
 
 function getDeliveryDate(order) {
@@ -1206,6 +1210,7 @@ function renderInvoicesGallery() {
         <div style="display:flex; gap:6px; margin-top:4px;">
           <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}')">View</button>
           <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}')">Download</button>
+          <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>
         </div>
       </div>
     `;
@@ -1333,6 +1338,30 @@ function openDeliveryModalForOrder(orderId) {
   openModal('modal-delivery-submission');
 }
 
+function editGstInvoice(orderId) {
+  const order = AppState.orders.find(item => item.id === orderId);
+  if (!order?.gstDetails) return;
+  openDeliveryModalForOrder(orderId);
+  const g = order.gstDetails;
+  document.getElementById('deliv-gst-toggle').checked = true;
+  toggleGstFields();
+  document.getElementById('gst-input-number').value = g.gstNumber || '';
+  document.getElementById('gst-input-shop').value = g.shopName || '';
+  document.getElementById('gst-input-base').value = g.baseAmount || '';
+  document.getElementById('gst-input-rate').value = g.gstRate || '18';
+  recalcGstTotal();
+  AppState.tempGstFileData = {
+    name: g.fileName || 'invoice.jpg',
+    data: '',
+    fileId: g.fileId || '',
+    fileUrl: g.fileUrl || '',
+    storagePath: g.storagePath || ''
+  };
+  document.getElementById('upload-status-text').innerHTML = g.fileName
+    ? `📎 <strong>${g.fileName}</strong> kept. Choose another file to replace it.`
+    : '📁 <strong>Click to attach PDF or snap camera photo</strong>';
+}
+
 function toggleGstFields() {
   const isChecked = document.getElementById('deliv-gst-toggle').checked;
   document.getElementById('deliv-gst-fields-wrapper').style.display = isChecked ? 'block' : 'none';
@@ -1381,7 +1410,9 @@ function handleSaveDeliveryWithGst(e) {
       totalAmount: base + tax,
       fileName: AppState.tempGstFileData?.name || 'invoice.jpg',
       fileId: AppState.tempGstFileData?.fileId || '',
-      fileData: AppState.tempGstFileData?.data || ''
+      fileData: AppState.tempGstFileData?.data || '',
+      fileUrl: AppState.tempGstFileData?.fileUrl || '',
+      storagePath: AppState.tempGstFileData?.storagePath || ''
     };
   } else {
     order.gstDetails = null;
@@ -1523,7 +1554,7 @@ function renderLifetimeDrilldownTable() {
 
   document.getElementById('lifetime-metric-count').textContent = settledOrders.length;
   document.getElementById('lifetime-metric-volume').textContent = `₹${settledOrders.reduce((s, o) => s + o.amountPaid, 0).toLocaleString()}`;
-  document.getElementById('lifetime-metric-profit').textContent = `₹${settledOrders.reduce((s, o) => s + o.profit, 0).toLocaleString()}`;
+  document.getElementById('lifetime-metric-profit').textContent = `₹${settledOrders.reduce((sum, order) => sum + getOrderProfit(order), 0).toLocaleString()}`;
 
   if (settledOrders.length === 0) {
     tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px;">No lifetime records found.</td></tr>`;
@@ -1786,6 +1817,10 @@ function viewGstInvoice(orderId) {
     </div>
   `;
   document.getElementById('btn-download-active-invoice').onclick = () => downloadSingleInvoice(order.id);
+  document.getElementById('btn-edit-active-invoice').onclick = () => {
+    closeModal('modal-view-invoice');
+    editGstInvoice(order.id);
+  };
   openModal('modal-view-invoice');
 }
 
