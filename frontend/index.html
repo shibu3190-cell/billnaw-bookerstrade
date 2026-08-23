@@ -144,6 +144,7 @@
             <input type="text" id="order-search" class="input-search" placeholder="Search ID, model, customer, card..." oninput="debouncedRenderOrders()" />
             <select id="order-status-filter" class="select-filter" onchange="renderOrdersTable()">
               <option value="ALL">All Statuses</option>
+              <option value="ACTIVE">Active Bookings</option>
               <option value="Pending Approval">Pending Approval</option>
               <option value="Booked">Booked</option>
               <option value="In Process">In Process</option>
@@ -783,6 +784,11 @@
   </div>
 
 </div>
+
+  <div id="app-update-banner" role="status" hidden>
+    <span>A new app version is available.</span>
+    <button type="button" onclick="applyAppUpdate()">Update now</button>
+  </div>
 
 </body>
 </html>

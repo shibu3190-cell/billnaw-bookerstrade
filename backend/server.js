@@ -833,6 +833,51 @@ function sheetRowsToObjects(values = []) {
   );
 }
 
+app.post('/api/customers/delete', authenticate, requireSession, async (req, res) => {
+  try {
+    const actor = requireAdminSession(req, res);
+    const customerId = String(req.body.customerId || '').trim();
+    if (!actor || !customerId) return res.status(400).json({ success: false, message: 'customerId is required.' });
+
+    const customerRef = db.collection('customers').doc(customerId);
+    const customerSnapshot = await customerRef.get();
+    if (!customerSnapshot.exists) return res.status(404).json({ success: false, message: 'Booker not found.' });
+    const customer = customerSnapshot.data();
+    if (!actor.isMaster && !sameOwner(customer.adminId, actor.adminId)) {
+      return res.status(403).json({ success: false, message: 'Only the owning admin can delete this booker.' });
+    }
+
+    const orderSnapshot = await db.collection('orders').where('customerId', '==', customerId).get();
+    let deletedFiles = 0;
+    for (const orderDoc of orderSnapshot.docs) {
+      const fileId = orderDoc.data().gstDetails?.fileId;
+      if (!fileId) continue;
+      const fileRef = db.collection('invoiceFiles').doc(fileId);
+      const fileSnapshot = await fileRef.get();
+      if (fileSnapshot.exists) {
+        const record = fileSnapshot.data();
+        if (record.storagePath) await storageBucket.file(record.storagePath).delete({ ignoreNotFound: true });
+        await fileRef.delete();
+        deletedFiles++;
+      }
+    }
+
+    const refs = [customerRef, ...orderSnapshot.docs.map(doc => doc.ref)];
+    for (let index = 0; index < refs.length; index += 400) {
+      const batch = db.batch();
+      refs.slice(index, index + 400).forEach(ref => batch.delete(ref));
+      await batch.commit();
+    }
+    const deletedSheets = (await Promise.all([
+      deleteSheetRecords('Customers', 0, customerId),
+      deleteSheetRecords('Orders', 5, customerId)
+    ])).reduce((total, count) => total + count, 0);
+    res.json({ success: true, customerId, deletedOrders: orderSnapshot.size, deletedFiles, deletedSheets });
+  } catch (err) {
+    res.status(500).json({ success: false, message: `Booker deletion failed: ${err.message}` });
+  }
+});
+
 function sameOwner(left, right) {
   const normalize = value => String(value || '').replace(/[-_\s]/g, '').toLowerCase();
   return normalize(left) === normalize(right);

@@ -5,6 +5,7 @@
 // 1. PWA Installation Service
 let deferredPwaPrompt = null;
 let hadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
+let waitingServiceWorker = null;
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -13,9 +14,25 @@ if ('serviceWorker' in navigator) {
   });
 
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
-      .catch(err => console.warn('SW error:', err));
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(registration => {
+      const showUpdate = worker => {
+        waitingServiceWorker = worker;
+        const banner = document.getElementById('app-update-banner');
+        if (banner) banner.hidden = false;
+      };
+      if (registration.waiting) showUpdate(registration.waiting);
+      registration.addEventListener('updatefound', () => {
+        const worker = registration.installing;
+        if (worker) worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed' && navigator.serviceWorker.controller) showUpdate(worker);
+        });
+      });
+    }).catch(err => console.warn('SW error:', err));
   });
+}
+
+function applyAppUpdate() {
+  if (waitingServiceWorker) waitingServiceWorker.postMessage({ type: 'SKIP_WAITING' });
 }
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -424,6 +441,9 @@ async function triggerAutoCloudSync(actionType, data = {}) {
   } else if (actionType === "CUSTOMER_STATUS_CHANGED") {
     endpoint = '/customers/status';
     payload = { customerId: data.customerId, active: data.active, actorAdminId: AppState.currentUser?.adminId };
+  } else if (actionType === "CUSTOMER_DELETED") {
+    endpoint = '/customers/delete';
+    payload = { customerId: data.customerId };
   } else if (actionType === "PRODUCT_SYNC") {
     endpoint = '/products/sync';
     payload = { product: data.product };
@@ -930,7 +950,7 @@ function renderKPIs() {
   const profit = list.reduce((sum, order) => sum + getOrderProfit(order), 0);
   const profitDue = list.filter(order => order.status !== 'Settled').reduce((sum, order) => sum + getOrderProfit(order), 0);
   homeGrid.innerHTML = `
-    <div class="kpi-card cyan interactive" onclick="switchTab('tab-orders')">
+    <div class="kpi-card cyan interactive" onclick="showActiveBookings()">
       <div class="kpi-label">Active Bookings (${active.length})</div>
       <div class="kpi-val">₹${activeVol.toLocaleString()}</div>
       <div class="kpi-sub">Pending Due: ₹${totalDue.toLocaleString()}</div>
@@ -946,6 +966,14 @@ function renderKPIs() {
       <div class="kpi-sub">Due: ₹${profitDue.toLocaleString()} | Open Profit</div>
     </div>
   `;
+}
+
+function showActiveBookings() {
+  const statusFilter = document.getElementById('order-status-filter');
+  const search = document.getElementById('order-search');
+  if (statusFilter) statusFilter.value = 'ACTIVE';
+  if (search) search.value = '';
+  switchTab('tab-orders');
 }
 
 function updateTodayBadge() {
@@ -999,7 +1027,8 @@ function renderOrdersTable() {
 
   const filtered = getVisibleOrders().filter(o => {
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
-    if (statusFilter !== 'ALL' && o.status !== statusFilter) return false;
+    if (statusFilter === 'ACTIVE' && o.status === 'Settled') return false;
+    if (statusFilter !== 'ALL' && statusFilter !== 'ACTIVE' && o.status !== statusFilter) return false;
     if (search) {
       const match = String(o.id).toLowerCase().includes(search) || 
                     o.productModel.toLowerCase().includes(search) ||
@@ -1134,7 +1163,8 @@ function renderCustomersTable() {
         <td style="color:#38bdf8;">₹${settled.toLocaleString()}</td>
         <td style="color:#34d399; font-weight:700;">₹${due.toLocaleString()}</td>
         <td><button class="btn btn-subtle btn-sm" onclick="filterCustomerOrders('${c.id}')">View</button>
-          <button class="btn ${c.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setCustomerActive('${c.id}', ${c.active === false})">${c.active === false ? 'Activate' : 'Revoke'}</button></td>
+          <button class="btn ${c.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setCustomerActive('${c.id}', ${c.active === false})">${c.active === false ? 'Activate' : 'Revoke'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCustomer('${c.id}')">Delete</button></td>
       </tr>
     `;
   });
@@ -1147,6 +1177,21 @@ function setCustomerActive(customerId, active) {
   persistLocalState();
   renderCustomersTable();
   triggerAutoCloudSync('CUSTOMER_STATUS_CHANGED', { customerId, active });
+}
+
+async function deleteCustomer(customerId) {
+  const customer = AppState.customers.find(item => item.id === customerId);
+  if (!customer || !confirm(`Delete booker ${customer.id} and all their bookings? This cannot be undone.`)) return;
+  try {
+    const result = await dispatchToBackend('/customers/delete', { customerId });
+    AppState.customers = AppState.customers.filter(item => item.id !== customerId);
+    AppState.orders = AppState.orders.filter(order => order.customerId !== customerId);
+    persistLocalState();
+    renderAllViews();
+    alert(`Booker deleted. ${result.deletedOrders || 0} booking(s) removed.`);
+  } catch (error) {
+    alert(`Booker deletion failed: ${error.message}`);
+  }
 }
 
 function renderAdminAccessTable() {

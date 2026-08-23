@@ -549,6 +549,33 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
 .modal-title { font-size: 1.05rem; font-weight: 700; }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 1.3rem; cursor: pointer; }
 
+#app-update-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--text-main);
+  background: var(--bg-surface);
+  border: 1px solid var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.82rem;
+}
+#app-update-banner[hidden] { display: none; }
+#app-update-banner button {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  color: #06111f;
+  background: var(--accent-cyan);
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 10px; }
 @media (min-width: 500px) {
   .form-grid.two-col { grid-template-columns: 1fr 1fr; }
