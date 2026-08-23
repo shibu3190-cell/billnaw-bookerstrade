@@ -35,7 +35,7 @@ function dismissPwaPrompt() {
 
 // 2. Cloud Configuration & Synchronizer
 const API_CONFIG = {
-  baseUrl: "http://localhost:5000/api",
+  baseUrl: "https://billnow-bookerstrade-3.onrender.com",
   secretToken: "AVI_TRADE_SECURE_KEY_2026"
 };
 

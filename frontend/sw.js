@@ -1,4 +1,4 @@
-const CACHE_NAME = 'devicetrade-v12';
+const CACHE_NAME = 'devicetrade-v13';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -41,6 +41,21 @@ self.addEventListener('fetch', (event) => {
         }
         return networkResponse;
       })
-      .catch(() => caches.match(event.request))
+      .catch(async () => {
+        const cachedResponse = await caches.match(event.request);
+        if (cachedResponse) return cachedResponse;
+
+        if (event.request.url.includes('/api/')) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: 'Backend unavailable. Check the server URL and try again.'
+          }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        throw new Error('Network request failed and no cached response exists.');
+      })
   );
 });
