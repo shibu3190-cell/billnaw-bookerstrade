@@ -1216,13 +1216,11 @@ function renderInvoicesGallery() {
   }
 
   list.forEach(o => {
-    const invoiceUrl = getInvoiceAttachmentUrl(o.gstDetails);
+    const hasInvoice = Boolean(o.gstDetails.fileData || o.gstDetails.fileId || o.gstDetails.fileUrl);
     container.innerHTML += `
       <div class="invoice-card">
-        <div class="invoice-preview-box" onclick="viewGstInvoice('${o.id}')" style="cursor:pointer;">
-          ${invoiceUrl ? (o.gstDetails.contentType === 'application/pdf' || String(o.gstDetails.fileName || '').toLowerCase().endsWith('.pdf')
-            ? `<iframe src="${invoiceUrl}" title="GST invoice PDF preview" style="width:100%; height:180px; border:0;"></iframe>`
-            : `<img src="${invoiceUrl}" alt="GST invoice" />`) : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
+        <div class="invoice-preview-box" data-invoice-preview="${o.id}" onclick="viewGstInvoice('${o.id}')" style="cursor:pointer;">
+          ${hasInvoice ? '<span style="color:var(--text-muted);">Loading invoice...</span>' : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
         </div>
         <div style="font-size:0.85rem; font-weight:700;">${o.productModel}</div>
         <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Qty: ${o.quantity || 1} | Tax: ₹${o.gstDetails.gstAmount}</div>
@@ -1234,6 +1232,40 @@ function renderInvoicesGallery() {
       </div>
     `;
   });
+  hydrateInvoicePreviews(list);
+}
+
+async function getInvoiceBlobUrl(gstDetails) {
+  if (gstDetails?.fileData) return gstDetails.fileData;
+  if (!gstDetails?.fileId) return '';
+  const response = await fetch(`${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(gstDetails.fileId)}`, {
+    headers: {
+      'x-api-key': API_CONFIG.secretToken,
+      ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
+    }
+  });
+  if (!response.ok) throw new Error(`Invoice preview failed (${response.status})`);
+  return URL.createObjectURL(await response.blob());
+}
+
+async function hydrateInvoicePreviews(orders) {
+  await Promise.all(orders.map(async order => {
+    const preview = [...document.querySelectorAll('[data-invoice-preview]')]
+      .find(element => element.dataset.invoicePreview === order.id);
+    if (!preview) return;
+    try {
+      const url = await getInvoiceBlobUrl(order.gstDetails);
+      const isPdf = order.gstDetails.contentType === 'application/pdf'
+        || String(order.gstDetails.fileName || '').toLowerCase().endsWith('.pdf');
+      preview.innerHTML = url
+        ? (isPdf ? `<iframe src="${url}" title="GST invoice PDF preview" style="width:100%; height:180px; border:0;"></iframe>`
+          : `<img src="${url}" alt="GST invoice" />`)
+        : '<span style="color:var(--text-muted);">Attachment unavailable</span>';
+    } catch (error) {
+      preview.innerHTML = '<span style="color:var(--text-muted);">Attachment unavailable</span>';
+      console.warn('Invoice preview unavailable:', error.message);
+    }
+  }));
 }
 
 function renderProductListSettings() {
@@ -1812,7 +1844,7 @@ function downloadSingleInvoice(orderId) {
   const order = AppState.orders.find(o => o.id === orderId);
   if (!order || !order.gstDetails) return;
   const fileId = order.gstDetails.fileId;
-  const url = fileId ? `${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}` : getInvoiceAttachmentUrl(order.gstDetails);
+  const url = fileId ? `${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}` : order.gstDetails.fileData;
   if (!url) return;
   fetch(url, fileId ? {
     headers: {
@@ -1834,7 +1866,7 @@ function downloadSingleInvoice(orderId) {
 }
 
 function getInvoiceAttachmentUrl(gstDetails) {
-  return gstDetails?.fileData || gstDetails?.fileUrl || '';
+  return gstDetails?.fileData || '';
 }
 
 function exportLifetimeBookingsToExcel() {
@@ -1846,21 +1878,31 @@ function exportLifetimeBookingsToExcel() {
   triggerBlobDownload(csv, `Lifetime_Settled_Deals_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
 
-function viewGstInvoice(orderId) {
+async function viewGstInvoice(orderId) {
   const order = AppState.orders.find(o => o.id === orderId);
   if (!order || !order.gstDetails) return;
   const g = order.gstDetails;
-  const invoiceUrl = getInvoiceAttachmentUrl(g);
   const isPdf = g.contentType === 'application/pdf' || String(g.fileName || '').toLowerCase().endsWith('.pdf');
   document.getElementById('preview-invoice-title').textContent = `GST Bill - ${order.productModel}`;
-  document.getElementById('preview-invoice-body').innerHTML = `
-    ${invoiceUrl ? (isPdf ? `<iframe src="${invoiceUrl}" title="GST invoice PDF" style="width:100%; height:65vh; border:1px solid var(--border-subtle); border-radius:8px;"></iframe>` : `<img src="${invoiceUrl}" alt="GST invoice" style="max-width: 100%; max-height:65vh; object-fit:contain; border-radius: 8px; border: 1px solid var(--border-subtle);" />`) : '<div style="color:var(--text-muted);">Invoice attachment unavailable.</div>'}
+  const body = document.getElementById('preview-invoice-body');
+  body.innerHTML = `
+    <div style="color:var(--text-muted);">Loading invoice...</div>
     <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-muted); text-align: left; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;">
       <strong>Merchant:</strong> ${g.shopName || 'N/A'}<br />
       <strong>GSTIN:</strong> <code>${g.gstNumber || 'N/A'}</code><br />
       <strong>Tax Breakdown:</strong> Base ₹${g.baseAmount?.toLocaleString()} + GST ${g.gstRate}% (₹${g.gstAmount}) = <strong>₹${g.totalAmount?.toLocaleString()}</strong>
     </div>
   `;
+  try {
+    const invoiceUrl = await getInvoiceBlobUrl(g);
+    body.firstElementChild.outerHTML = invoiceUrl
+      ? (isPdf ? `<iframe src="${invoiceUrl}" title="GST invoice PDF" style="width:100%; height:65vh; border:1px solid var(--border-subtle); border-radius:8px;"></iframe>`
+        : `<img src="${invoiceUrl}" alt="GST invoice" style="max-width: 100%; max-height:65vh; object-fit:contain; border-radius: 8px; border: 1px solid var(--border-subtle);" />`)
+      : '<div style="color:var(--text-muted);">Invoice attachment unavailable.</div>';
+  } catch (error) {
+    body.firstElementChild.textContent = 'Invoice attachment unavailable.';
+    console.warn('Invoice preview unavailable:', error.message);
+  }
   document.getElementById('btn-download-active-invoice').onclick = () => downloadSingleInvoice(order.id);
   document.getElementById('btn-edit-active-invoice').onclick = () => {
     closeModal('modal-view-invoice');
