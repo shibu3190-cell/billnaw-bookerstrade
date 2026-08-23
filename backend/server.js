@@ -239,6 +239,39 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'active', spreadsheet: SPREADSHEET_ID, timestamp: new Date().toISOString() });
 });
 
+app.get('/api/invoices/:fileId', authenticate, requireSession, async (req, res) => {
+  try {
+    const recordSnapshot = await db.collection('invoiceFiles').doc(req.params.fileId).get();
+    if (!recordSnapshot.exists) return res.status(404).json({ success: false, message: 'Invoice file not found.' });
+
+    const record = recordSnapshot.data();
+    const actor = getSession(req).user;
+    let ownerRecord = record;
+    if (!record.adminId && !record.customerId && record.orderId) {
+      const orderSnapshot = await db.collection('orders').doc(record.orderId).get();
+      if (orderSnapshot.exists) ownerRecord = orderSnapshot.data();
+    }
+    const ownsInvoice = actor.isMaster || (actor.role === 'admin'
+      ? sameOwner(ownerRecord.adminId, actor.adminId)
+      : String(ownerRecord.customerId || '').trim() === String(actor.customerId || '').trim());
+    if (!ownsInvoice) return res.status(403).json({ success: false, message: 'You cannot access this invoice.' });
+
+    res.set({
+      'Content-Type': record.contentType || 'application/octet-stream',
+      'Content-Disposition': `inline; filename="${String(record.fileName || 'invoice').replace(/["\r\n]/g, '')}"`,
+      'Cache-Control': 'private, max-age=300'
+    });
+    storageBucket.file(record.storagePath).createReadStream()
+      .on('error', error => {
+        if (!res.headersSent) res.status(502).json({ success: false, message: `Invoice file could not be read: ${error.message}` });
+        else res.destroy(error);
+      })
+      .pipe(res);
+  } catch (err) {
+    res.status(502).json({ success: false, message: `Invoice access failed: ${err.message}` });
+  }
+});
+
 app.post('/api/auth/login', authenticate, async (req, res) => {
   try {
     const { username, password } = req.body;

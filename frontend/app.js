@@ -182,7 +182,9 @@ async function dispatchToBackend(endpoint, payload) {
     if (res.status === 401 && errorBody.message === 'An active login session is required.') {
       await logoutApp();
     }
-    throw new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
+    const error = new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
   }
   return await res.json();
 }
@@ -442,7 +444,8 @@ async function triggerAutoCloudSync(actionType, data = {}) {
       updateQueueBadge();
     } catch (err) {
       console.warn(`[Network/Auth Issue] Queuing ${actionType}:`, err.message);
-      if (err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) return;
+      if (err.status === 401 || err.status === 403
+        || err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) return;
       const item = { endpoint, payload, actionType };
       offlineOutbox.push(item);
       await addStoredQueueItem(item);
@@ -469,7 +472,7 @@ async function flushOfflineQueue() {
         applyCloudInvoiceResult(order, result);
       }
     } catch (e) {
-      remaining.push(item);
+      if (e.status !== 401 && e.status !== 403) remaining.push(item);
     }
   }
   offlineOutbox = remaining;
@@ -1808,9 +1811,15 @@ function downloadAllInvoicesCSV() {
 function downloadSingleInvoice(orderId) {
   const order = AppState.orders.find(o => o.id === orderId);
   if (!order || !order.gstDetails) return;
-  const url = getInvoiceAttachmentUrl(order.gstDetails);
+  const fileId = order.gstDetails.fileId;
+  const url = fileId ? `${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}` : getInvoiceAttachmentUrl(order.gstDetails);
   if (!url) return;
-  fetch(url).then(response => {
+  fetch(url, fileId ? {
+    headers: {
+      'x-api-key': API_CONFIG.secretToken,
+      ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
+    }
+  } : undefined).then(response => {
     if (!response.ok) throw new Error(`Download failed (${response.status})`);
     return response.blob();
   }).then(blob => {
