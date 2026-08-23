@@ -109,7 +109,7 @@ async function uploadInvoiceFile(gstDetails, orderId) {
   if (existing.exists) {
     const record = existing.data();
     return {
-      gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl: record.fileUrl, storagePath: record.storagePath },
+      gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl: record.fileUrl, storagePath: record.storagePath, contentType: record.contentType || contentType },
       deletedFileIds: []
     };
   }
@@ -120,7 +120,14 @@ async function uploadInvoiceFile(gstDetails, orderId) {
   const extension = contentType === 'application/pdf' ? 'pdf' : contentType.split('/')[1];
   const storagePath = `invoices/${fileId}.${extension}`;
   const file = storageBucket.file(storagePath);
-  await file.save(buffer, { resumable: false, metadata: { contentType, cacheControl: 'private, max-age=3600' } });
+  await file.save(buffer, {
+    resumable: false,
+    metadata: {
+      contentType,
+      cacheControl: 'private, max-age=3600',
+      contentDisposition: 'inline'
+    }
+  });
   const [fileUrl] = await file.getSignedUrl({ action: 'read', expires: '2500-01-01' });
 
   await db.collection('invoiceFiles').doc(fileId).set({
@@ -184,7 +191,7 @@ async function deleteSheetRecords(tabName, columnIndex, ownerId) {
 function authenticate(req, res, next) {
   const token = req.headers['x-api-key'] || req.headers['X-API-KEY'] || req.body?.secretToken;
   if (!token || token !== EXPECTED_TOKEN) {
-    console.warn(`[401 Blocked] Received: "${token}" | Expected: "${EXPECTED_TOKEN}"`);
+    console.warn('[401 Blocked] Invalid or missing API token.');
     return res.status(401).json({ success: false, message: 'Unauthorized API Token' });
   }
   next();

@@ -4,10 +4,12 @@
 
 // 1. PWA Installation Service
 let deferredPwaPrompt = null;
+let hadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    window.location.reload();
+    if (hadServiceWorkerController) window.location.reload();
+    hadServiceWorkerController = true;
   });
 
   window.addEventListener('load', () => {
@@ -50,6 +52,7 @@ const STORAGE_STATE_STORE = 'state';
 const STORAGE_QUEUE_STORE = 'outbox';
 let storageDb = null;
 let offlineOutbox = [];
+let cloudSyncInFlight = null;
 
 function sameAdminId(left, right) {
   return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
@@ -207,8 +210,10 @@ function csvOrNumber(value) {
 }
 
 async function syncCloudData(showResult = false) {
+  if (cloudSyncInFlight && !showResult) return cloudSyncInFlight;
   if (showResult) setDataManagementStatus('Importing Google Sheet data...');
-  try {
+  const syncRequest = (async () => {
+    try {
     const result = await fetchFromBackend(showResult ? '/admin/sheets/data' : '/admin/data/export');
     const data = result.data || {};
     const admins = data.admins || [];
@@ -283,14 +288,18 @@ async function syncCloudData(showResult = false) {
       setDataManagementStatus(`Imported ${admins.length} admins, ${customers.length} bookers, ${products.length} products, and ${orders.length} orders.`);
       alert('Google Sheet data imported successfully.');
     }
-  } catch (error) {
+    } catch (error) {
     if (showResult) {
       setDataManagementStatus(error.message, true);
       alert(`Google Sheet import failed: ${error.message}`);
     } else {
       console.warn('Background cloud sync failed:', error.message);
     }
-  }
+    }
+  })();
+  if (showResult) return syncRequest;
+  cloudSyncInFlight = syncRequest.finally(() => { cloudSyncInFlight = null; });
+  return cloudSyncInFlight;
 }
 
 function syncFromGoogleSheets() {
@@ -1240,7 +1249,7 @@ function renderProductListSettings() {
 
 // 8. Workflows (Booking, Delivery, Settlement)
 async function openNewOrderModal() {
-  await syncFromGoogleSheets().catch(error => console.warn('Unable to refresh bookers before booking:', error.message));
+  await syncCloudData().catch(error => console.warn('Unable to refresh data before booking:', error.message));
   const pSelect = document.getElementById('modal-order-product');
   pSelect.innerHTML = `${AppState.products.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('')}<option value="Other">Other device</option>`;
 
