@@ -209,10 +209,10 @@ function csvOrNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function syncFromGoogleSheets() {
-  setDataManagementStatus('Importing Google Sheet data...');
+async function syncCloudData(showResult = false) {
+  if (showResult) setDataManagementStatus('Importing Google Sheet data...');
   try {
-    const result = await fetchFromBackend('/admin/sheets/data');
+    const result = await fetchFromBackend(showResult ? '/admin/sheets/data' : '/admin/data/export');
     const data = result.data || {};
     const admins = data.admins || [];
     const customers = data.customers || [];
@@ -280,12 +280,22 @@ async function syncFromGoogleSheets() {
 
     persistLocalState();
     renderAllViews();
-    setDataManagementStatus(`Imported ${admins.length} admins, ${customers.length} bookers, ${products.length} products, and ${orders.length} orders.`);
-    alert('Google Sheet data imported successfully.');
+    if (showResult) {
+      setDataManagementStatus(`Imported ${admins.length} admins, ${customers.length} bookers, ${products.length} products, and ${orders.length} orders.`);
+      alert('Google Sheet data imported successfully.');
+    }
   } catch (error) {
-    setDataManagementStatus(error.message, true);
-    alert(`Google Sheet import failed: ${error.message}`);
+    if (showResult) {
+      setDataManagementStatus(error.message, true);
+      alert(`Google Sheet import failed: ${error.message}`);
+    } else {
+      console.warn('Background cloud sync failed:', error.message);
+    }
   }
+}
+
+function syncFromGoogleSheets() {
+  return syncCloudData(true);
 }
 
 async function downloadAllAppData() {
@@ -473,6 +483,29 @@ const AppState = {
   tempGstFileData: null,
   sessionToken: ''
 };
+
+let cloudSyncTimer = null;
+
+async function persistSession() {
+  await storageReady;
+  if (storageDb && AppState.currentUser && AppState.sessionToken) {
+    await writeStoredState('session', { user: AppState.currentUser, token: AppState.sessionToken });
+  }
+}
+
+async function clearPersistedSession() {
+  await storageReady;
+  if (storageDb) {
+    await idbRequest(storageDb.transaction(STORAGE_STATE_STORE, 'readwrite').objectStore(STORAGE_STATE_STORE).delete('session'));
+  }
+}
+
+function startCloudSync() {
+  if (cloudSyncTimer) clearInterval(cloudSyncTimer);
+  cloudSyncTimer = setInterval(() => {
+    if (AppState.currentUser && navigator.onLine) syncCloudData().catch(() => {});
+  }, 15000);
+}
 
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
@@ -689,7 +722,8 @@ async function executeLogin(e) {
     const result = await dispatchToBackend('/auth/login', { username: u, password: p });
     AppState.currentUser = result.user;
     AppState.sessionToken = result.sessionToken;
-    await syncFromGoogleSheets().catch(error => console.warn('Unable to refresh cloud data after login:', error.message));
+    await persistSession();
+    await syncCloudData().catch(() => {});
     if (result.user.isMaster) {
       AppState.adminProfile = { ...AppState.adminProfile, adminId: result.user.adminId, name: result.user.name, active: true };
       if (!AppState.admins.some(adminItem => adminItem.adminId === result.user.adminId)) AppState.admins.unshift(AppState.adminProfile);
@@ -699,6 +733,10 @@ async function executeLogin(e) {
     return;
   }
 
+  showAuthenticatedView();
+}
+
+function showAuthenticatedView() {
   document.getElementById('view-auth').style.display = 'none';
   document.getElementById('view-app-main').style.display = 'flex';
   document.getElementById('badge-active-role').textContent = AppState.currentUser.role === 'admin' ? 'Master Admin' : 'Booker Portal';
@@ -720,10 +758,14 @@ async function executeLogin(e) {
   buildNavigation();
   renderAllViews();
   updateQueueBadge();
+  startCloudSync();
 }
 
-function logoutApp() {
+async function logoutApp() {
   AppState.currentUser = null;
+  AppState.sessionToken = '';
+  if (cloudSyncTimer) clearInterval(cloudSyncTimer);
+  await clearPersistedSession();
   document.getElementById('view-app-main').style.display = 'none';
   document.getElementById('view-auth').style.display = 'flex';
 }
@@ -1762,3 +1804,12 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 
 // Run Hydration
 const appStateReady = loadPersistedState();
+appStateReady.then(async () => {
+  if (!storageDb) return;
+  const savedSession = await readStoredState('session', null);
+  if (!savedSession?.user || !savedSession.token) return;
+  AppState.currentUser = savedSession.user;
+  AppState.sessionToken = savedSession.token;
+  showAuthenticatedView();
+  await syncCloudData();
+});

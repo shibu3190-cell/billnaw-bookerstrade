@@ -742,15 +742,21 @@ app.get('/api/admin/data/export', authenticate, requireSession, async (req, res)
     );
     const collectionData = snapshot => snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const scope = records => actor.isMaster ? records : records.filter(record => actor.role === 'customer'
-      ? String(record.customerId || '').trim() === String(actor.customerId || '').trim()
+      ? (record.collection === 'products'
+        ? sameOwner(record.adminId, actor.adminId)
+        : String(record.customerId || '').trim() === String(actor.customerId || '').trim())
       : sameOwner(record.adminId, actor.adminId));
+    const customerProducts = collectionData(products);
+    const customerScopedProducts = actor.role === 'customer' && !actor.isMaster
+      ? customerProducts.filter(record => sameOwner(record.adminId, actor.adminId))
+      : customerProducts;
     res.json({
       success: true,
       exportedAt: new Date().toISOString(),
       data: {
         admins: actor.isMaster ? collectionData(admins) : collectionData(admins).filter(record => sameOwner(record.adminId, actor.adminId)),
         customers: scope(collectionData(customers)),
-        products: scope(collectionData(products)),
+        products: actor.isMaster ? customerProducts : actor.role === 'customer' ? customerScopedProducts : scope(customerProducts),
         orders: scope(collectionData(orders))
       }
     });
