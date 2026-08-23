@@ -716,7 +716,9 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
         response[tab.toLowerCase()] = actor.isMaster ? records : tab === 'Admins'
           ? records.filter(record => ownedBy(record, actor.adminId))
           : records.filter(record => actor.role === 'customer'
-            ? String(record['Customer ID'] || record.customerId || record.id || '').trim() === actor.customerId
+            ? tab === 'Products'
+              ? ownedBy(record, actor.adminId)
+              : String(record['Customer ID'] || record.customerId || record.id || '').trim() === actor.customerId
             : ownedBy(record, actor.adminId));
       } catch (error) {
         if (error.code === 400 || error.code === 404) {

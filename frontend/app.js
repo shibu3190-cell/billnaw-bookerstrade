@@ -248,8 +248,9 @@ async function syncFromGoogleSheets() {
         id: product['Product ID'] || product.id || `sheet_${Date.now()}_${Math.random()}`,
         name: product['Product Name'] || product.name || '',
         targetPrice: csvOrNumber(product['Target Price'] || product.targetPrice),
-        commission: csvOrNumber(product.Commission || product.commission)
-      })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || product.adminId === AppState.currentUser?.adminId));
+        commission: csvOrNumber(product.Commission || product.commission),
+        adminId: String(product['Admin ID'] || product.adminId || '').trim()
+      })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || sameAdminId(product.adminId, AppState.currentUser?.adminId)));
     }
     if (orders.length > 0) {
       AppState.orders = orders.map(order => normalizeOrder({
