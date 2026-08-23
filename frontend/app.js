@@ -6,8 +6,13 @@
 let deferredPwaPrompt = null;
 
 if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.location.reload();
+  });
+
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(err => console.warn('SW error:', err));
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .catch(err => console.warn('SW error:', err));
   });
 }
 
