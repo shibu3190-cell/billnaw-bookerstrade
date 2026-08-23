@@ -20,8 +20,26 @@ app.use(cors({
 
 app.use(express.json({ limit: '20mb' }));
 
-// Load Service Account Key
-const serviceAccount = require('./serviceAccountKey.json');
+function loadServiceAccount() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    try {
+      return JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    } catch (error) {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must contain valid service account JSON.');
+    }
+  }
+
+  try {
+    return require('./serviceAccountKey.json');
+  } catch (error) {
+    if (error.code === 'MODULE_NOT_FOUND') {
+      throw new Error('Firebase credentials are missing. Set FIREBASE_SERVICE_ACCOUNT_JSON or provide serviceAccountKey.json.');
+    }
+    throw error;
+  }
+}
+
+const serviceAccount = loadServiceAccount();
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {

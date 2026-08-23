@@ -13,6 +13,10 @@ The application no longer contains demo admin or demo booker credentials. Login 
 4. Start the backend from `backend/` with `npm start`.
 5. Serve `frontend/` from a local web server and open the URL.
 
+## Render deployment
+
+Set the Render service root directory to `backend` and add `FIREBASE_SERVICE_ACCOUNT_JSON` as a secret environment variable containing the complete contents of `serviceAccountKey.json`. Do not commit the JSON key. The backend uses this environment variable in deployment and the local file when running locally.
+
 Do not put real passwords in this README or in frontend files. The frontend only receives a short-lived server session after successful login.
 
 ## Access model
