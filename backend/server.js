@@ -42,16 +42,18 @@ function loadServiceAccount() {
 const serviceAccount = loadServiceAccount();
 const SESSION_SIGNING_SECRET = process.env.SESSION_SIGNING_SECRET || serviceAccount.private_key;
 if (!SESSION_SIGNING_SECRET) throw new Error('Firebase credentials must include private_key for session signing.');
+const STORAGE_BUCKET_NAME = process.env.FIREBASE_STORAGE_BUCKET
+  || `${serviceAccount.project_id}.firebasestorage.app`;
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    storageBucket: `${serviceAccount.project_id}.appspot.com`
+    storageBucket: STORAGE_BUCKET_NAME
   });
 }
 const db = admin.firestore();
-const storageBucket = admin.storage().bucket(process.env.FIREBASE_STORAGE_BUCKET || `${serviceAccount.project_id}.appspot.com`);
+const storageBucket = admin.storage().bucket(STORAGE_BUCKET_NAME);
 
 // Initialize Google Sheets API v4
 const auth = new google.auth.GoogleAuth({
@@ -364,8 +366,12 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
   } catch (err) {
     const status = err.message?.includes('Unsupported invoice') || err.message?.includes('base64 data URL')
       ? 400
+      : err.message?.includes('specified bucket does not exist') || err.code === 404 ? 503
       : err.code === 5 || err.message?.includes('NOT_FOUND') ? 404 : 502;
-    res.status(status).json({ success: false, message: `Delivery/GST processing failed: ${err.message}` });
+    const message = status === 503
+      ? `Firebase Storage bucket is unavailable. Set FIREBASE_STORAGE_BUCKET to the active bucket or create ${STORAGE_BUCKET_NAME}.`
+      : `Delivery/GST processing failed: ${err.message}`;
+    res.status(status).json({ success: false, message });
   }
 });
 

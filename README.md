@@ -15,7 +15,7 @@ The application no longer contains demo admin or demo booker credentials. Login 
 
 ## Render deployment
 
-Set the Render service root directory to `backend` and add `FIREBASE_SERVICE_ACCOUNT_JSON` as a secret environment variable containing the complete contents of `serviceAccountKey.json`. Do not commit the JSON key. The backend uses this environment variable in deployment and the local file when running locally.
+Set the Render service root directory to `backend` and add `FIREBASE_SERVICE_ACCOUNT_JSON` as a secret environment variable containing the complete contents of `serviceAccountKey.json`. Create Firebase Storage in the Firebase console, then set `FIREBASE_STORAGE_BUCKET` to the exact bucket name shown there, such as `your-project.firebasestorage.app` or `your-project.appspot.com`. Do not commit the JSON key. The backend uses this environment variable in deployment and the local file when running locally.
 
 Do not put real passwords in this README or in frontend files. The frontend only receives a short-lived server session after successful login.
 
