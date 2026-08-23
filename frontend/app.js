@@ -179,7 +179,10 @@ async function dispatchToBackend(endpoint, payload) {
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(errorBody.message || `HTTP ${res.status}`);
+    if (res.status === 401 && errorBody.message === 'An active login session is required.') {
+      await logoutApp();
+    }
+    throw new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
   }
   return await res.json();
 }
@@ -439,6 +442,7 @@ async function triggerAutoCloudSync(actionType, data = {}) {
       updateQueueBadge();
     } catch (err) {
       console.warn(`[Network/Auth Issue] Queuing ${actionType}:`, err.message);
+      if (err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) return;
       const item = { endpoint, payload, actionType };
       offlineOutbox.push(item);
       await addStoredQueueItem(item);

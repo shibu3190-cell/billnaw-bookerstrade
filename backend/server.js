@@ -40,6 +40,8 @@ function loadServiceAccount() {
 }
 
 const serviceAccount = loadServiceAccount();
+const SESSION_SIGNING_SECRET = process.env.SESSION_SIGNING_SECRET || serviceAccount.private_key;
+if (!SESSION_SIGNING_SECRET) throw new Error('Firebase credentials must include private_key for session signing.');
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
@@ -198,15 +200,37 @@ function authenticate(req, res, next) {
 }
 
 function issueSession(user) {
-  const token = crypto.randomBytes(32).toString('hex');
+  const payload = Buffer.from(JSON.stringify({ user, expiresAt: Date.now() + SESSION_TTL_MS })).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SIGNING_SECRET).update(payload).digest('base64url');
+  const token = `${payload}.${signature}`;
   sessions.set(token, { user, expiresAt: Date.now() + SESSION_TTL_MS });
   return token;
 }
 
 function getSession(req) {
-  const session = sessions.get(req.headers['x-session-token']);
-  if (!session || session.expiresAt < Date.now()) return null;
-  return session;
+  const token = req.headers['x-session-token'];
+  if (!token) return null;
+  const cached = sessions.get(token);
+  if (cached && cached.expiresAt >= Date.now()) return cached;
+
+  const separator = token.lastIndexOf('.');
+  if (separator < 1) return null;
+  const payload = token.slice(0, separator);
+  const signature = token.slice(separator + 1);
+  const expectedSignature = crypto.createHmac('sha256', SESSION_SIGNING_SECRET).update(payload).digest('base64url');
+  const receivedSignature = Buffer.from(signature);
+  const validSignature = Buffer.from(expectedSignature);
+  const signaturesMatch = receivedSignature.length === validSignature.length
+    && crypto.timingSafeEqual(receivedSignature, validSignature);
+  if (!signaturesMatch) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!session.user || session.expiresAt < Date.now()) return null;
+    sessions.set(token, session);
+    return session;
+  } catch (error) {
+    return null;
+  }
 }
 
 app.get('/api/health', (req, res) => {
@@ -338,7 +362,10 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const status = err.message?.includes('Unsupported invoice') || err.message?.includes('base64 data URL')
+      ? 400
+      : err.code === 5 || err.message?.includes('NOT_FOUND') ? 404 : 502;
+    res.status(status).json({ success: false, message: `Delivery/GST processing failed: ${err.message}` });
   }
 });
 
