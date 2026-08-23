@@ -266,6 +266,13 @@
             <select id="invoice-product-filter" class="select-filter" onchange="renderInvoicesGallery()">
               <option value="ALL">All Products</option>
             </select>
+            <select id="invoice-date-mode" class="select-filter" onchange="toggleInvoiceDateFilters()">
+              <option value="TODAY">Today</option>
+              <option value="CUSTOM">Custom date range</option>
+              <option value="ALL">All dates</option>
+            </select>
+            <input type="date" id="invoice-date-from" class="select-filter" onchange="renderInvoicesGallery()" aria-label="Invoice date from" hidden />
+            <input type="date" id="invoice-date-to" class="select-filter" onchange="renderInvoicesGallery()" aria-label="Invoice date to" hidden />
           </div>
           <button class="btn btn-subtle btn-sm" onclick="downloadAllInvoicesCSV()">Export Invoices List (.csv)</button>
         </div>

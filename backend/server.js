@@ -82,13 +82,21 @@ async function tryFirestore(operation, context) {
 
 async function deleteOldInvoiceFiles() {
   const snapshot = await db.collection('invoiceFiles').orderBy('createdAt', 'asc').get();
-  const filesToDelete = snapshot.docs.slice(0, Math.max(0, snapshot.size - 100));
+  const activeFiles = snapshot.docs.filter(doc => doc.data().storagePath && !doc.data().deletedAt);
+  const filesToDelete = activeFiles.slice(0, Math.max(0, activeFiles.length - 100));
   const deletedFileIds = [];
 
   for (const doc of filesToDelete) {
     const record = doc.data();
     if (record.storagePath) await storageBucket.file(record.storagePath).delete({ ignoreNotFound: true });
-    await doc.ref.delete();
+    await doc.ref.update({ storagePath: '', fileUrl: '', deletedAt: new Date().toISOString() });
+    if (record.orderId) {
+      const orderRef = db.collection('orders').doc(record.orderId);
+      const orderSnapshot = await orderRef.get();
+      if (orderSnapshot.exists && orderSnapshot.data().gstDetails?.fileId === (record.fileId || doc.id)) {
+        await orderRef.update({ gstDetails: { ...orderSnapshot.data().gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true } });
+      }
+    }
     deletedFileIds.push(record.fileId || doc.id);
   }
 
@@ -113,7 +121,7 @@ async function uploadInvoiceFile(gstDetails, orderId) {
   if (existing.exists) {
     const record = existing.data();
     return {
-      gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl: record.fileUrl, storagePath: record.storagePath, contentType: record.contentType || contentType },
+      gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl: '', storagePath: record.storagePath, contentType: record.contentType || contentType, attachmentDeleted: Boolean(record.deletedAt) },
       deletedFileIds: []
     };
   }
@@ -132,13 +140,13 @@ async function uploadInvoiceFile(gstDetails, orderId) {
       contentDisposition: 'inline'
     }
   });
-  const [fileUrl] = await file.getSignedUrl({ action: 'read', expires: '2500-01-01' });
-
   await db.collection('invoiceFiles').doc(fileId).set({
     fileId,
     orderId,
+    adminId: gstDetails.adminId || '',
+    customerId: gstDetails.customerId || '',
     storagePath,
-    fileUrl,
+    fileUrl: '',
     fileName: gstDetails.fileName || `${fileId}.${extension}`,
     contentType,
     createdAt: Date.now()
@@ -146,7 +154,7 @@ async function uploadInvoiceFile(gstDetails, orderId) {
 
   const deletedFileIds = await deleteOldInvoiceFiles();
   return {
-    gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl, storagePath, contentType, attachmentDeleted: false },
+    gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl: '', storagePath, contentType, attachmentDeleted: false },
     deletedFileIds
   };
 }
@@ -246,6 +254,7 @@ app.get('/api/invoices/:fileId', authenticate, requireSession, async (req, res) 
 
     const record = recordSnapshot.data();
     const actor = getSession(req).user;
+    if (record.deletedAt || !record.storagePath) return res.status(410).json({ success: false, message: 'This invoice file has been deleted.' });
     let ownerRecord = record;
     if (!record.adminId && !record.customerId && record.orderId) {
       const orderSnapshot = await db.collection('orders').doc(record.orderId).get();
@@ -269,6 +278,41 @@ app.get('/api/invoices/:fileId', authenticate, requireSession, async (req, res) 
       .pipe(res);
   } catch (err) {
     res.status(502).json({ success: false, message: `Invoice access failed: ${err.message}` });
+  }
+});
+
+app.delete('/api/invoices/:fileId', authenticate, requireSession, async (req, res) => {
+  try {
+    const invoiceRef = db.collection('invoiceFiles').doc(req.params.fileId);
+    const invoiceSnapshot = await invoiceRef.get();
+    if (!invoiceSnapshot.exists) return res.status(404).json({ success: false, message: 'Invoice file not found.' });
+
+    const record = invoiceSnapshot.data();
+    const actor = getSession(req).user;
+    let ownerRecord = record;
+    let orderRef = null;
+    if (record.orderId) {
+      orderRef = db.collection('orders').doc(record.orderId);
+      if (!record.adminId && !record.customerId) {
+        const orderSnapshot = await orderRef.get();
+        if (orderSnapshot.exists) ownerRecord = orderSnapshot.data();
+      }
+    }
+    const ownsInvoice = actor.isMaster || (actor.role === 'admin'
+      ? sameOwner(ownerRecord.adminId, actor.adminId)
+      : String(ownerRecord.customerId || '').trim() === String(actor.customerId || '').trim());
+    if (!ownsInvoice) return res.status(403).json({ success: false, message: 'You cannot delete this invoice.' });
+    if (record.storagePath) await storageBucket.file(record.storagePath).delete({ ignoreNotFound: true });
+    await invoiceRef.update({ storagePath: '', fileUrl: '', deletedAt: new Date().toISOString() });
+    if (orderRef) {
+      const orderSnapshot = await orderRef.get();
+      if (orderSnapshot.exists && orderSnapshot.data().gstDetails?.fileId === (record.fileId || req.params.fileId)) {
+        await orderRef.update({ gstDetails: { ...orderSnapshot.data().gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true } });
+      }
+    }
+    res.json({ success: true, fileId: record.fileId || req.params.fileId });
+  } catch (err) {
+    res.status(500).json({ success: false, message: `Invoice deletion failed: ${err.message}` });
   }
 });
 

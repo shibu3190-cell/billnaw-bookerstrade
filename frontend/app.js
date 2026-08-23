@@ -528,6 +528,10 @@ function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function getInvoiceDate(order) {
+  return String(order.gstDetails?.uploadedAt || order.delivery?.submittedAt || order.createdAt || '').slice(0, 10);
+}
+
 function normalizeOrder(order) {
   const delivery = order.delivery ? {
     ...order.delivery,
@@ -1192,6 +1196,9 @@ function renderInvoicesGallery() {
   const selectFilter = document.getElementById('invoice-product-filter');
   const search = (document.getElementById('invoice-search')?.value || '').toLowerCase();
   const productFilter = selectFilter ? selectFilter.value : 'ALL';
+  const dateMode = document.getElementById('invoice-date-mode')?.value || 'TODAY';
+  const dateFrom = document.getElementById('invoice-date-from')?.value || todayIsoDate();
+  const dateTo = document.getElementById('invoice-date-to')?.value || dateFrom;
 
   if (selectFilter && selectFilter.options.length <= 1) {
     AppState.products.forEach(p => {
@@ -1204,6 +1211,9 @@ function renderInvoicesGallery() {
     if (!o.gstDetails || !o.gstDetails.included || o.gstDetails.attachmentDeleted) return false;
     if (!isAdmin && o.customerId !== AppState.currentUser?.customerId) return false;
     if (productFilter !== 'ALL' && o.productModel !== productFilter) return false;
+    const invoiceDate = getInvoiceDate(o);
+    if (dateMode === 'TODAY' && invoiceDate !== todayIsoDate()) return false;
+    if (dateMode === 'CUSTOM' && (invoiceDate < dateFrom || invoiceDate > dateTo)) return false;
     if (search) {
       return o.customerName.toLowerCase().includes(search) || o.productModel.toLowerCase().includes(search) || o.gstDetails.gstNumber?.toLowerCase().includes(search);
     }
@@ -1223,16 +1233,50 @@ function renderInvoicesGallery() {
           ${hasInvoice ? '<span style="color:var(--text-muted);">Loading invoice...</span>' : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
         </div>
         <div style="font-size:0.85rem; font-weight:700;">${o.productModel}</div>
-        <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Qty: ${o.quantity || 1} | Tax: ₹${o.gstDetails.gstAmount}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">Order: <strong>${o.id}</strong> | Qty: ${o.quantity || 1} | Date: ${getInvoiceDate(o)}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Tax: ₹${o.gstDetails.gstAmount}</div>
         <div style="display:flex; gap:6px; margin-top:4px;">
           <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}')">View</button>
           <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}')">Download</button>
           <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>
+          <button class="btn btn-danger btn-sm" style="flex:1;" onclick="deleteGstInvoice('${o.id}')">Delete</button>
         </div>
       </div>
     `;
   });
   hydrateInvoicePreviews(list);
+}
+
+function toggleInvoiceDateFilters() {
+  const custom = document.getElementById('invoice-date-mode')?.value === 'CUSTOM';
+  ['invoice-date-from', 'invoice-date-to'].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.hidden = !custom;
+  });
+  renderInvoicesGallery();
+}
+
+async function deleteGstInvoice(orderId) {
+  const order = AppState.orders.find(item => item.id === orderId);
+  const fileId = order?.gstDetails?.fileId;
+  if (!order?.gstDetails || !fileId) return alert('This invoice has no cloud file to delete.');
+  if (!confirm(`Delete only the invoice file for Order ${order.id} (${order.productModel})? GST and order data will be kept.`)) return;
+  try {
+    const response = await fetch(`${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+      headers: {
+        'x-api-key': API_CONFIG.secretToken,
+        ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
+      }
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    order.gstDetails = { ...order.gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true };
+    persistLocalState();
+    renderAllViews();
+  } catch (error) {
+    alert(`Invoice deletion failed: ${error.message}`);
+  }
 }
 
 async function getInvoiceBlobUrl(gstDetails) {
@@ -1471,6 +1515,7 @@ function handleSaveDeliveryWithGst(e) {
       gstRate: rate,
       gstAmount: tax,
       totalAmount: base + tax,
+      uploadedAt: new Date().toISOString(),
       fileName: AppState.tempGstFileData?.name || 'invoice.jpg',
       fileId: AppState.tempGstFileData?.fileId || '',
       fileData: AppState.tempGstFileData?.data || '',
