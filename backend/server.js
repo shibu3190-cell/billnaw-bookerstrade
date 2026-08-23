@@ -102,7 +102,9 @@ async function uploadInvoiceFile(gstDetails, orderId) {
     throw new Error('Unsupported invoice attachment type.');
   }
 
-  const fileId = /^[a-zA-Z0-9_-]{8,120}$/.test(gstDetails.fileId || '') ? gstDetails.fileId : `invoice_${crypto.randomUUID()}`;
+  const fileId = /^[a-zA-Z0-9_-]{8,120}$/.test(gstDetails.fileId || '') && !gstDetails.fileData
+    ? gstDetails.fileId
+    : `invoice_${crypto.randomUUID()}`;
   const existing = await db.collection('invoiceFiles').doc(fileId).get();
   if (existing.exists) {
     const record = existing.data();
@@ -133,7 +135,7 @@ async function uploadInvoiceFile(gstDetails, orderId) {
 
   const deletedFileIds = await deleteOldInvoiceFiles();
   return {
-    gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl, storagePath, attachmentDeleted: false },
+    gstDetails: { ...gstDetails, fileData: '', fileId, fileUrl, storagePath, contentType, attachmentDeleted: false },
     deletedFileIds
   };
 }
@@ -310,17 +312,17 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
     );
 
     await ensureSheetTab('Orders', [
-      'Order ID', 'Platform', 'Product Model', 'Customer Name', 'Customer ID',
+      'Order ID', 'Platform', 'Product Model', 'Quantity', 'Customer Name', 'Customer ID',
       'Card Last 4', 'Amount Paid', 'Payable Due', 'Advance Paid', 'Status', 'Date', 'Admin ID'
     ]);
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'Orders!A:L',
+      range: 'Orders!A:M',
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: [[
-          order.id, order.platform, order.productModel, order.customerName,
+          order.id, order.platform, order.productModel, order.quantity || 1, order.customerName,
           order.customerId, order.cardLast4, order.amountPaid, order.payableAmount,
           order.advancePaid || 0, order.status, order.createdAt, order.adminId || 'ADM-001'
         ]]
@@ -355,6 +357,11 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
     const persistedGstDetails = uploadedInvoice.gstDetails?.fileData === ''
       ? uploadedInvoice.gstDetails
       : (uploadedInvoice.gstDetails || null);
+    if (persistedGstDetails) {
+      persistedGstDetails.adminId = existingOrder.adminId || '';
+      persistedGstDetails.customerId = existingOrder.customerId || '';
+      persistedGstDetails.orderId = orderId;
+    }
 
     await tryFirestore(
       () => orderRef.update({
@@ -425,7 +432,7 @@ app.post('/api/orders/status', authenticate, requireSession, async (req, res) =>
     if (rowIndex !== -1) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
-        range: `Orders!J${rowIndex + 1}`,
+        range: `Orders!K${rowIndex + 1}`,
         valueInputOption: 'USER_ENTERED',
         resource: { values: [[status]] }
       });
@@ -450,15 +457,15 @@ app.post('/api/orders/approve', authenticate, requireSession, async (req, res) =
     } catch (firestoreError) {
       console.error('Firestore approval lookup failed; checking Sheets:', firestoreError.message);
     }
-    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:L' });
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:M' });
     const rows = sheetData.data.values || [];
     const rowIndex = rows.findIndex(row => row[0] === orderId);
-    if (!order && rowIndex > 0) order = { adminId: rows[rowIndex][11], status: rows[rowIndex][9] };
+    if (!order && rowIndex > 0) order = { adminId: rows[rowIndex][12], status: rows[rowIndex][10] };
     if (!order) return res.status(404).json({ success: false, message: 'Booking not found.' });
     if (!actor.isMaster && order.adminId !== actor.adminId) return res.status(403).json({ success: false, message: 'Only the owning admin can approve this booking.' });
     await tryFirestore(() => orderRef.update({ status: 'Booked', approvedBy: actor.adminId, approvedAt: new Date().toISOString() }), `approve order ${orderId}`);
     if (rowIndex > 0) {
-      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!J${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [['Booked']] } });
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!K${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [['Booked']] } });
     }
     res.json({ success: true, orderId, status: 'Booked' });
   } catch (err) {
@@ -674,7 +681,7 @@ app.post('/api/admin/delete', authenticate, requireSession, async (req, res) => 
       deleteSheetRecords('Admins', 0, adminId),
       deleteSheetRecords('Customers', 5, adminId),
       deleteSheetRecords('Products', 4, adminId),
-      deleteSheetRecords('Orders', 11, adminId)
+      deleteSheetRecords('Orders', 12, adminId)
     ])).reduce((total, count) => total + count, 0);
     res.json({ success: true, adminId, deletedFirestore, deletedSheets });
   } catch (err) {

@@ -154,10 +154,7 @@ function updateQueueBadge() {
 
   if (!navigator.onLine) {
     dot.className = 'sync-dot busy';
-    label.textContent = offlineOutbox.length > 0 ? `Offline (${offlineOutbox.length})` : 'Offline';
-  } else if (offlineOutbox.length > 0) {
-    dot.className = 'sync-dot busy';
-    label.textContent = `Syncing (${offlineOutbox.length})...`;
+    label.textContent = 'Offline';
   } else {
     dot.className = 'sync-dot';
     label.textContent = 'Online';
@@ -262,6 +259,7 @@ async function syncCloudData(showResult = false) {
         id: order['Order ID'] || order.id,
         platform: order.Platform || order.platform || 'Other',
         productModel: order['Product Model'] || order.productModel || '',
+        quantity: Number(order.Quantity || order.quantity) || 1,
         customerName: order['Customer Name'] || order.customerName || '',
         customerId: order['Customer ID'] || order.customerId || '',
         cardLast4: order['Card Last 4'] || order.cardLast4 || '',
@@ -275,7 +273,7 @@ async function syncCloudData(showResult = false) {
         adminId: order['Admin ID'] || order.adminId || AppState.adminProfile.adminId,
         isToday: order.isToday === true || order.isToday === 'true',
         delivery: order.delivery || null,
-        gstDetails: order.gstDetails || null
+        gstDetails: order.gstDetails ? { ...order.gstDetails, adminId: order.gstDetails.adminId || order.adminId, customerId: order.gstDetails.customerId || order.customerId, quantity: order.gstDetails.quantity || (Number(order.Quantity) || 1) } : null
       })).filter(order => order.id);
     }
 
@@ -489,9 +487,10 @@ let cloudSyncTimer = null;
 
 async function persistSession() {
   await storageReady;
-  if (storageDb && AppState.currentUser && AppState.sessionToken) {
-    await writeStoredState('session', { user: AppState.currentUser, token: AppState.sessionToken });
-  }
+  if (!AppState.currentUser || !AppState.sessionToken) return;
+  const session = { user: AppState.currentUser, token: AppState.sessionToken };
+  if (storageDb) await writeStoredState('session', session);
+  localStorage.setItem('dt_session', JSON.stringify(session));
 }
 
 async function clearPersistedSession() {
@@ -499,6 +498,7 @@ async function clearPersistedSession() {
   if (storageDb) {
     await idbRequest(storageDb.transaction(STORAGE_STATE_STORE, 'readwrite').objectStore(STORAGE_STATE_STORE).delete('session'));
   }
+  localStorage.removeItem('dt_session');
 }
 
 function startCloudSync() {
@@ -534,6 +534,7 @@ function normalizeOrder(order) {
     advancePaid: csvOrNumber(order.advancePaid),
     settledAmount: csvOrNumber(order.settledAmount),
     profit: csvOrNumber(order.profit),
+    quantity: Math.max(1, Number(order.quantity) || 1),
     createdAt: order.createdAt || todayIsoDate(),
     delivery,
     isToday: delivery?.deliveryDate === todayIsoDate(),
@@ -554,7 +555,7 @@ function getOrderProfit(order) {
   const storedProfit = csvOrNumber(order.profit);
   if (storedProfit > 0) return storedProfit;
   const product = AppState.products.find(item => item.name === order.productModel);
-  return csvOrNumber(product?.commission);
+  return csvOrNumber(product?.commission) * (order.quantity || 1);
 }
 
 function getDeliveryDate(order) {
@@ -951,7 +952,7 @@ function renderHomeOrders() {
       <tr>
         <td><strong>${o.id}</strong></td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
-        <td>${o.productModel}</td>
+        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span></td>
         <td>${o.customerName}</td>
         <td>•••• ${o.cardLast4}</td>
         <td>₹${o.amountPaid.toLocaleString()}</td>
@@ -1000,7 +1001,7 @@ function renderOrdersTable() {
       <tr>
         <td><strong>${o.id}</strong></td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
-        <td>${o.productModel}</td>
+        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span></td>
         <td>•••• ${o.cardLast4}</td>
         <td>${o.customerName}</td>
         <td>₹${o.amountPaid.toLocaleString()}</td>
@@ -1203,10 +1204,12 @@ function renderInvoicesGallery() {
     container.innerHTML += `
       <div class="invoice-card">
         <div class="invoice-preview-box" onclick="viewGstInvoice('${o.id}')" style="cursor:pointer;">
-          ${invoiceUrl ? `<img src="${invoiceUrl}" />` : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
+          ${invoiceUrl ? (o.gstDetails.contentType === 'application/pdf' || String(o.gstDetails.fileName || '').toLowerCase().endsWith('.pdf')
+            ? `<iframe src="${invoiceUrl}" title="GST invoice PDF preview" style="width:100%; height:180px; border:0;"></iframe>`
+            : `<img src="${invoiceUrl}" alt="GST invoice" />`) : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
         </div>
         <div style="font-size:0.85rem; font-weight:700;">${o.productModel}</div>
-        <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Tax: ₹${o.gstDetails.gstAmount}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Qty: ${o.quantity || 1} | Tax: ₹${o.gstDetails.gstAmount}</div>
         <div style="display:flex; gap:6px; margin-top:4px;">
           <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}')">View</button>
           <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}')">Download</button>
@@ -1254,6 +1257,7 @@ async function openNewOrderModal() {
   document.getElementById('modal-order-id').value = `OD${Math.floor(1000000000 + Math.random() * 9000000000)}`;
   document.getElementById('modal-order-card').value = '';
   document.getElementById('modal-order-paid').value = AppState.products[0].targetPrice;
+  document.getElementById('modal-order-quantity').value = '1';
   document.getElementById('modal-order-advance').value = '0';
   document.getElementById('modal-order-platform-other').value = '';
   document.getElementById('modal-order-platform-other').style.display = 'none';
@@ -1290,6 +1294,7 @@ function handleCreateBooking(e) {
     return;
   }
   const paid = Number(document.getElementById('modal-order-paid').value);
+  const quantity = Math.max(1, Number(document.getElementById('modal-order-quantity').value) || 1);
   const adv = Number(document.getElementById('modal-order-advance').value) || 0;
   const comm = prod ? prod.commission : 1000;
 
@@ -1306,10 +1311,11 @@ function handleCreateBooking(e) {
       : (prod ? prod.name : 'Custom Device'),
     cardLast4: document.getElementById('modal-order-card').value.trim(),
     amountPaid: paid,
-    payableAmount: paid + comm,
+    quantity,
+    payableAmount: (paid + comm) * quantity,
     advancePaid: adv,
     settledAmount: 0,
-    profit: comm,
+    profit: comm * quantity,
     status: AppState.currentUser.role === 'customer' ? 'Pending Approval' : 'Booked',
     isToday: false,
     createdAt: new Date().toISOString().slice(0, 10),
@@ -1331,6 +1337,11 @@ function openDeliveryModalForOrder(orderId) {
   document.getElementById('deliv-form-order-id').value = o.id;
   document.getElementById('deliv-form-model').value = o.productModel;
   document.getElementById('deliv-form-platform').value = o.platform || 'Flipkart';
+  document.getElementById('deliv-form-name').value = o.delivery?.recipientName || '';
+  document.getElementById('deliv-form-mobile').value = o.delivery?.mobile || '';
+  document.getElementById('deliv-form-tracking').value = o.delivery?.tracking || '';
+  document.getElementById('deliv-form-otp').value = o.delivery?.otp || '';
+  document.getElementById('deliv-form-pincode').value = o.delivery?.pincode || '';
   document.getElementById('deliv-gst-toggle').checked = false;
   toggleGstFields();
   AppState.tempGstFileData = null;
@@ -1402,6 +1413,10 @@ function handleSaveDeliveryWithGst(e) {
     const tax = Math.round((base * rate) / 100);
     order.gstDetails = {
       included: true,
+      quantity: order.quantity || 1,
+      adminId: order.adminId || '',
+      customerId: order.customerId || '',
+      orderId: order.id,
       gstNumber: document.getElementById('gst-input-number').value.trim(),
       shopName: document.getElementById('gst-input-shop').value.trim(),
       baseAmount: base,
@@ -1780,13 +1795,20 @@ function downloadAllInvoicesCSV() {
 function downloadSingleInvoice(orderId) {
   const order = AppState.orders.find(o => o.id === orderId);
   if (!order || !order.gstDetails) return;
-  const a = document.createElement('a');
-  a.href = getInvoiceAttachmentUrl(order.gstDetails);
-  if (!a.href) return;
-  a.download = order.gstDetails.fileName || `GST_${order.id}.jpg`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const url = getInvoiceAttachmentUrl(order.gstDetails);
+  if (!url) return;
+  fetch(url).then(response => {
+    if (!response.ok) throw new Error(`Download failed (${response.status})`);
+    return response.blob();
+  }).then(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = order.gstDetails.fileName || `GST_${order.id}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }).catch(error => alert(error.message));
 }
 
 function getInvoiceAttachmentUrl(gstDetails) {
@@ -1807,9 +1829,10 @@ function viewGstInvoice(orderId) {
   if (!order || !order.gstDetails) return;
   const g = order.gstDetails;
   const invoiceUrl = getInvoiceAttachmentUrl(g);
+  const isPdf = g.contentType === 'application/pdf' || String(g.fileName || '').toLowerCase().endsWith('.pdf');
   document.getElementById('preview-invoice-title').textContent = `GST Bill - ${order.productModel}`;
   document.getElementById('preview-invoice-body').innerHTML = `
-    ${invoiceUrl ? `<img src="${invoiceUrl}" style="max-width: 100%; border-radius: 8px; border: 1px solid var(--border-subtle);" />` : '<div style="color:var(--text-muted);">Invoice attachment unavailable.</div>'}
+    ${invoiceUrl ? (isPdf ? `<iframe src="${invoiceUrl}" title="GST invoice PDF" style="width:100%; height:65vh; border:1px solid var(--border-subtle); border-radius:8px;"></iframe>` : `<img src="${invoiceUrl}" alt="GST invoice" style="max-width: 100%; max-height:65vh; object-fit:contain; border-radius: 8px; border: 1px solid var(--border-subtle);" />`) : '<div style="color:var(--text-muted);">Invoice attachment unavailable.</div>'}
     <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-muted); text-align: left; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;">
       <strong>Merchant:</strong> ${g.shopName || 'N/A'}<br />
       <strong>GSTIN:</strong> <code>${g.gstNumber || 'N/A'}</code><br />
@@ -1840,8 +1863,10 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 // Run Hydration
 const appStateReady = loadPersistedState();
 appStateReady.then(async () => {
-  if (!storageDb) return;
-  const savedSession = await readStoredState('session', null);
+  let savedSession = storageDb ? await readStoredState('session', null) : null;
+  if (!savedSession) {
+    try { savedSession = JSON.parse(localStorage.getItem('dt_session') || 'null'); } catch (error) { savedSession = null; }
+  }
   if (!savedSession?.user || !savedSession.token) return;
   AppState.currentUser = savedSession.user;
   AppState.sessionToken = savedSession.token;
