@@ -18,13 +18,13 @@ window.addEventListener('beforeinstallprompt', (e) => {
   if (banner) banner.style.display = 'flex';
 });
 
-function triggerPwaInstall() {
+async function triggerPwaInstall() {
   if (deferredPwaPrompt) {
-    deferredPwaPrompt.prompt();
-    deferredPwaPrompt.userChoice.then(() => {
-      deferredPwaPrompt = null;
-      dismissPwaPrompt();
-    });
+    const installPrompt = deferredPwaPrompt;
+    deferredPwaPrompt = null;
+    await installPrompt.prompt();
+    await installPrompt.userChoice;
+    dismissPwaPrompt();
   }
 }
 
@@ -35,7 +35,7 @@ function dismissPwaPrompt() {
 
 // 2. Cloud Configuration & Synchronizer
 const API_CONFIG = {
-  baseUrl: "https://billnow-bookerstrade-3.onrender.com",
+  baseUrl: "https://billnow-bookerstrade-3.onrender.com/api",
   secretToken: "AVI_TRADE_SECURE_KEY_2026"
 };
 
