@@ -70,6 +70,8 @@ const STORAGE_QUEUE_STORE = 'outbox';
 let storageDb = null;
 let offlineOutbox = [];
 let cloudSyncInFlight = null;
+let directDeliveryEntry = false;
+let directDeliveryPackageIndex = 0;
 
 function sameAdminId(left, right) {
   return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
@@ -175,6 +177,9 @@ function updateQueueBadge() {
   if (!navigator.onLine) {
     dot.className = 'sync-dot busy';
     label.textContent = 'Offline';
+  } else if (offlineOutbox.length > 0) {
+    dot.className = 'sync-dot busy';
+    label.textContent = `Sync pending (${offlineOutbox.length})`;
   } else {
     dot.className = 'sync-dot';
     label.textContent = 'Online';
@@ -232,6 +237,7 @@ function csvOrNumber(value) {
 }
 
 async function syncCloudData(showResult = false) {
+  if (!showResult && offlineOutbox.length > 0) return;
   if (cloudSyncInFlight && !showResult) return cloudSyncInFlight;
   if (showResult) setDataManagementStatus('Importing Google Sheet data...');
   const syncRequest = (async () => {
@@ -370,7 +376,7 @@ async function resetLocalAppData() {
 
 function applyCloudInvoiceResult(order, result) {
   if (!order || !result) return;
-  if (result.file && order.gstDetails) {
+  if (result.file && order.gstDetails && !result.packageId) {
     order.gstDetails = {
       ...order.gstDetails,
       ...result.file,
@@ -383,7 +389,16 @@ function applyCloudInvoiceResult(order, result) {
       if (item.gstDetails?.fileId && deleted.has(item.gstDetails.fileId)) {
         item.gstDetails = { ...item.gstDetails, fileData: '', fileUrl: '', attachmentDeleted: true };
       }
+      item.deliveryPackages?.forEach(packageEntry => {
+        if (packageEntry.gstDetails?.fileId && deleted.has(packageEntry.gstDetails.fileId)) {
+          packageEntry.gstDetails = { ...packageEntry.gstDetails, fileData: '', fileUrl: '', attachmentDeleted: true };
+        }
+      });
     });
+  }
+  if (result.packageId && result.file) {
+    const packageEntry = order.deliveryPackages?.find(item => item.id === result.packageId);
+    if (packageEntry) packageEntry.gstDetails = { ...packageEntry.gstDetails, ...result.file, fileData: '' };
   }
   persistLocalState();
 }
@@ -405,7 +420,8 @@ async function triggerAutoCloudSync(actionType, data = {}) {
       platform: data.order.platform,
       model: data.order.productModel,
       delivery: data.order.delivery,
-      gstDetails: data.order.gstDetails
+      gstDetails: data.order.gstDetails,
+      ...(data.packageEntry ? { packageEntry: data.packageEntry } : {})
     };
   } else if (actionType === "STATUS_CHANGED") {
     endpoint = '/orders/status';
@@ -414,6 +430,9 @@ async function triggerAutoCloudSync(actionType, data = {}) {
       status: data.order.status,
       settledAt: data.order.settledAt
     };
+  } else if (actionType === "PACKAGE_STATUS_CHANGED") {
+    endpoint = '/orders/package-status';
+    payload = { orderId: data.orderId, packageId: data.packageId, status: data.status };
   } else if (actionType === "SETTLEMENT_RECORDED") {
     endpoint = '/orders/settle';
     payload = {
@@ -455,27 +474,32 @@ async function triggerAutoCloudSync(actionType, data = {}) {
     payload = { profile: data.profile };
   }
 
-  if (!endpoint) return;
+  if (!endpoint) return { status: 'ignored' };
 
   if (navigator.onLine) {
     try {
       const result = await dispatchToBackend(endpoint, payload);
       if (actionType === 'DELIVERY_SUBMITTED') applyCloudInvoiceResult(data.order, result);
       updateQueueBadge();
+      return { status: 'synced', result };
     } catch (err) {
       console.warn(`[Network/Auth Issue] Queuing ${actionType}:`, err.message);
       if (err.status === 401 || err.status === 403
-        || err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) return;
+        || err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) {
+        return { status: 'rejected', error: err };
+      }
       const item = { endpoint, payload, actionType };
       offlineOutbox.push(item);
       await addStoredQueueItem(item);
       updateQueueBadge();
+      return { status: 'queued', error: err };
     }
   } else {
     const item = { endpoint, payload, actionType };
     offlineOutbox.push(item);
     await addStoredQueueItem(item);
     updateQueueBadge();
+    return { status: 'queued' };
   }
 }
 
@@ -489,7 +513,7 @@ async function flushOfflineQueue() {
       if (item.actionType === 'DELIVERY_SUBMITTED') {
         const orderId = item.payload.orderId;
         const order = AppState.orders.find(orderItem => orderItem.id === orderId);
-        applyCloudInvoiceResult(order, result);
+        applyCloudInvoiceResult(order, { ...result, packageId: item.payload.packageEntry?.id });
       }
     } catch (e) {
       if (e.status !== 401 && e.status !== 403) remaining.push(item);
@@ -1061,6 +1085,7 @@ function renderOrdersTable() {
         <td>
           <div style="display:flex; gap:6px;">
             ${isAdmin && o.status === 'Pending Approval' ? `<button class="btn btn-primary btn-sm" onclick="approveBooking('${o.id}')">Approve</button>` : ''}
+            ${o.deliveryPackages?.length > 0 && o.deliveryPackages.length < o.quantity ? `<button class="btn btn-subtle btn-sm" onclick="continueDirectDeliveryEntry('${o.id}')">Continue packages</button>` : ''}
             ${o.status !== 'Pending Approval' && !o.delivery?.submitted ? `<button class="btn btn-subtle btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Delivery & GST</button>` : ''}
             ${isAdmin && o.status === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
             ${isAdmin && o.status === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
@@ -1074,11 +1099,27 @@ function renderOrdersTable() {
 function approveBooking(orderId) {
   const order = AppState.orders.find(item => item.id === orderId);
   if (!order || AppState.currentUser?.role !== 'admin' || !confirm(`Approve booking ${orderId}?`)) return;
-  order.status = 'Booked';
+  order.status = order.deliveryPackages?.length ? 'Out for Delivery' : 'Booked';
+  if (order.deliveryPackages?.length) {
+    order.deliveryPackages = order.deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }));
+    order.isToday = true;
+  }
   order.approvedBy = AppState.currentUser.adminId;
   order.approvedAt = new Date().toISOString();
   renderAllViews();
   triggerAutoCloudSync('ORDER_APPROVED', { orderId });
+}
+
+function orderDeliveryEntries(order) {
+  const packages = Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [];
+  if (packages.length) return packages.map(packageEntry => ({
+    id: packageEntry.id,
+    delivery: packageEntry.delivery,
+    gstDetails: packageEntry.gstDetails,
+    status: packageEntry.status || (order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery'),
+    packageEntry: true
+  }));
+  return order.delivery?.submitted ? [{ id: '', delivery: order.delivery, gstDetails: order.gstDetails, status: order.status, packageEntry: false }] : [];
 }
 
 function renderDeliveryTable() {
@@ -1091,13 +1132,14 @@ function renderDeliveryTable() {
   const isAdmin = AppState.currentUser?.role === 'admin';
   const selectedDate = document.getElementById('delivery-date-filter')?.value || todayIsoDate();
 
-  const deliveries = getVisibleOrders().filter(o => {
+  const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map(entry => ({ order, ...entry }))).filter(item => {
+    const o = item.order;
+    const d = item.delivery;
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
-    if (!o.delivery || !o.delivery.submitted) return false;
-    if (getDeliveryDate(o) !== selectedDate) return false;
-    if (platFilter !== 'ALL' && o.delivery.platform !== platFilter) return false;
+    if (!d || !d.submitted) return false;
+    if ((d.deliveryDate || o.createdAt) !== selectedDate) return false;
+    if (platFilter !== 'ALL' && d.platform !== platFilter) return false;
     if (search) {
-      const d = o.delivery;
       return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search) || o.productModel.toLowerCase().includes(search);
     }
     return true;
@@ -1108,22 +1150,24 @@ function renderDeliveryTable() {
     return;
   }
 
-  deliveries.forEach(o => {
-    const d = o.delivery;
+  deliveries.forEach(item => {
+    const { order: o, delivery: d, gstDetails: packageGst, id: packageId } = item;
+    const deliveryStatus = item.status || o.status;
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong></td>
+        <td><strong>${o.productModel}</strong>${packageId ? `<br><small>Package ${o.deliveryPackages.findIndex(entry => entry.id === packageId) + 1} of ${o.quantity}</small>` : ''}</td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
         <td><strong style="color:#fbbf24;">${d.otp}</strong></td>
         <td><strong>${d.pincode}</strong></td>
-        <td>${o.gstDetails ? `<button class="btn btn-subtle btn-sm" onclick="viewGstInvoice('${o.id}')">📄 View GST</button>` : 'None'}</td>
-        <td><span class="pill pill-green">${o.status}</span></td>
+        <td>${packageGst ? `<button class="btn btn-subtle btn-sm" onclick="viewGstInvoice('${o.id}', '${packageId}')">📄 View GST</button>` : 'None'}</td>
+        <td><span class="pill pill-green">${deliveryStatus}</span></td>
         <td>
-          ${isAdmin && o.status === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
-          ${isAdmin && o.status === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
+          ${isAdmin && deliveryStatus === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}', '${packageId}')">Mark Delivered</button>` : ''}
+          ${isAdmin && !item.packageEntry && deliveryStatus === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
+          ${isAdmin && item.packageEntry && o.status === 'Delivered' && packageId === o.deliveryPackages[o.deliveryPackages.length - 1]?.id && !String(o.customerId).startsWith('ADMIN-SELF-') ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle Order</button>` : ''}
         </td>
       </tr>
     `;
@@ -1252,17 +1296,20 @@ function renderInvoicesGallery() {
   }
 
   const isAdmin = AppState.currentUser?.role === 'admin';
-  const list = AppState.orders.filter(o => {
-    if (!o.gstDetails || !o.gstDetails.included || o.gstDetails.attachmentDeleted) return false;
-    if (!isAdmin && o.customerId !== AppState.currentUser?.customerId) return false;
-    if (productFilter !== 'ALL' && o.productModel !== productFilter) return false;
-    const invoiceDate = getInvoiceDate(o);
+  const list = AppState.orders.flatMap(order => {
+    if (!isAdmin && order.customerId !== AppState.currentUser?.customerId) return [];
+    const packageInvoices = (order.deliveryPackages || []).filter(item => item.gstDetails?.included)
+      .map(item => ({ order, packageId: item.id, gstDetails: item.gstDetails, delivery: item.delivery }));
+    if (order.gstDetails?.included) packageInvoices.unshift({ order, packageId: '', gstDetails: order.gstDetails, delivery: order.delivery });
+    return packageInvoices;
+  }).filter(entry => {
+    const { order, gstDetails, delivery } = entry;
+    if (!gstDetails || gstDetails.attachmentDeleted || (productFilter !== 'ALL' && order.productModel !== productFilter)) return false;
+    const invoiceDate = String(gstDetails.uploadedAt || delivery?.submittedAt || order.createdAt || '').slice(0, 10);
     if (dateMode === 'TODAY' && invoiceDate !== todayIsoDate()) return false;
     if (dateMode === 'CUSTOM' && (invoiceDate < dateFrom || invoiceDate > dateTo)) return false;
-    if (search) {
-      return o.customerName.toLowerCase().includes(search) || o.productModel.toLowerCase().includes(search) || o.gstDetails.gstNumber?.toLowerCase().includes(search);
-    }
-    return true;
+    if (!search) return true;
+    return order.customerName.toLowerCase().includes(search) || order.productModel.toLowerCase().includes(search) || gstDetails.gstNumber?.toLowerCase().includes(search);
   });
 
   if (list.length === 0) {
@@ -1270,21 +1317,24 @@ function renderInvoicesGallery() {
     return;
   }
 
-  list.forEach(o => {
-    const hasInvoice = Boolean(o.gstDetails.fileData || o.gstDetails.fileId || o.gstDetails.fileUrl);
+  list.forEach(entry => {
+    const { order: o, packageId, gstDetails } = entry;
+    const key = packageId || o.id;
+    const packageArg = packageId ? `, '${packageId}'` : '';
+    const hasInvoice = Boolean(gstDetails.fileData || gstDetails.fileId || gstDetails.fileUrl);
     container.innerHTML += `
       <div class="invoice-card">
-        <div class="invoice-preview-box" data-invoice-preview="${o.id}" onclick="viewGstInvoice('${o.id}')" style="cursor:pointer;">
+        <div class="invoice-preview-box" data-invoice-preview="${key}" onclick="viewGstInvoice('${o.id}'${packageArg})" style="cursor:pointer;">
           ${hasInvoice ? '<span style="color:var(--text-muted);">Loading invoice...</span>' : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
         </div>
         <div style="font-size:0.85rem; font-weight:700;">${o.productModel}</div>
-        <div style="font-size:0.75rem; color:var(--text-muted);">Order: <strong>${o.id}</strong> | Qty: ${o.quantity || 1} | Date: ${getInvoiceDate(o)}</div>
-        <div style="font-size:0.75rem; color:var(--text-muted);">${o.gstDetails.shopName || 'N/A'} | Tax: ₹${o.gstDetails.gstAmount}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">Order: <strong>${o.id}</strong>${packageId ? ` | Package: ${packageId}` : ''} | Date: ${String(gstDetails.uploadedAt || entry.delivery?.submittedAt || o.createdAt || '').slice(0, 10)}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">${gstDetails.shopName || 'N/A'} | Tax: ₹${gstDetails.gstAmount}</div>
         <div style="display:flex; gap:6px; margin-top:4px;">
-          <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}')">View</button>
-          <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}')">Download</button>
-          <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>
-          <button class="btn btn-danger btn-sm" style="flex:1;" onclick="deleteGstInvoice('${o.id}')">Delete</button>
+          <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}'${packageArg})">View</button>
+          <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}'${packageArg})">Download</button>
+          ${packageId ? '' : `<button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>`}
+          <button class="btn btn-danger btn-sm" style="flex:1;" onclick="deleteGstInvoice('${o.id}'${packageArg})">Delete</button>
         </div>
       </div>
     `;
@@ -1301,10 +1351,12 @@ function toggleInvoiceDateFilters() {
   renderInvoicesGallery();
 }
 
-async function deleteGstInvoice(orderId) {
+async function deleteGstInvoice(orderId, packageId = '') {
   const order = AppState.orders.find(item => item.id === orderId);
-  const fileId = order?.gstDetails?.fileId;
-  if (!order?.gstDetails || !fileId) return alert('This invoice has no cloud file to delete.');
+  const packageEntry = order?.deliveryPackages?.find(item => item.id === packageId);
+  const gstDetails = packageId ? packageEntry?.gstDetails : order?.gstDetails;
+  const fileId = gstDetails?.fileId;
+  if (!gstDetails || !fileId) return alert('This invoice has no cloud file to delete.');
   if (!confirm(`Delete only the invoice file for Order ${order.id} (${order.productModel})? GST and order data will be kept.`)) return;
   try {
     const response = await fetch(`${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}`, {
@@ -1316,7 +1368,8 @@ async function deleteGstInvoice(orderId) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
-    order.gstDetails = { ...order.gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true };
+    if (packageId) packageEntry.gstDetails = { ...gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true };
+    else order.gstDetails = { ...gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true };
     persistLocalState();
     renderAllViews();
   } catch (error) {
@@ -1337,15 +1390,16 @@ async function getInvoiceBlobUrl(gstDetails) {
   return URL.createObjectURL(await response.blob());
 }
 
-async function hydrateInvoicePreviews(orders) {
-  await Promise.all(orders.map(async order => {
+async function hydrateInvoicePreviews(entries) {
+  await Promise.all(entries.map(async entry => {
+    const key = entry.packageId || entry.order.id;
     const preview = [...document.querySelectorAll('[data-invoice-preview]')]
-      .find(element => element.dataset.invoicePreview === order.id);
+      .find(element => element.dataset.invoicePreview === key);
     if (!preview) return;
     try {
-      const url = await getInvoiceBlobUrl(order.gstDetails);
-      const isPdf = order.gstDetails.contentType === 'application/pdf'
-        || String(order.gstDetails.fileName || '').toLowerCase().endsWith('.pdf');
+      const url = await getInvoiceBlobUrl(entry.gstDetails);
+      const isPdf = entry.gstDetails.contentType === 'application/pdf'
+        || String(entry.gstDetails.fileName || '').toLowerCase().endsWith('.pdf');
       preview.innerHTML = url
         ? (isPdf ? `<iframe src="${url}" title="GST invoice PDF preview" style="width:100%; height:180px; border:0;"></iframe>`
           : `<img src="${url}" alt="GST invoice" />`)
@@ -1417,6 +1471,152 @@ function autoFillOrderPrice() {
   if (prod) document.getElementById('modal-order-paid').value = prod.targetPrice;
 }
 
+function handleDirectDeliveryProductChange() {
+  const productId = document.getElementById('direct-delivery-product').value;
+  const product = AppState.products.find(item => item.id === productId);
+  const customModel = document.getElementById('direct-delivery-custom-model');
+  customModel.style.display = productId === 'Other' ? 'block' : 'none';
+  customModel.required = productId === 'Other';
+  document.getElementById('direct-delivery-card-amount').value = product ? product.targetPrice : '';
+  document.getElementById('deliv-form-model').value = product?.name || '';
+}
+
+function toggleDeliveryOtherPlatform() {
+  const other = document.getElementById('deliv-form-platform').value === 'Other';
+  const input = document.getElementById('deliv-form-platform-other');
+  input.style.display = other ? 'block' : 'none';
+  input.required = other;
+}
+
+function updateDeliveryPackageProgress() {
+  const quantity = Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1);
+  const progress = document.getElementById('delivery-package-progress');
+  if (progress) progress.textContent = `Package ${directDeliveryPackageIndex + 1} of ${quantity}`;
+  const submit = document.getElementById('delivery-submit-button');
+  if (submit && directDeliveryEntry) {
+    submit.textContent = directDeliveryPackageIndex + 1 < quantity ? 'Next Package' : (quantity > 1 ? 'Save Final Package' : 'Submit Delivery');
+  }
+}
+
+function setDirectDeliveryFieldsActive(active) {
+  const section = document.getElementById('direct-delivery-fields');
+  section.hidden = !active;
+  ['direct-delivery-card-amount', 'direct-delivery-quantity'].forEach(id => {
+    document.getElementById(id).required = active;
+  });
+  document.getElementById('deliv-form-platform').disabled = active && directDeliveryPackageIndex > 0;
+  document.getElementById('deliv-form-platform-other').disabled = active && directDeliveryPackageIndex > 0;
+  ['direct-delivery-product', 'direct-delivery-custom-model', 'direct-delivery-card-amount', 'direct-delivery-quantity', 'direct-delivery-owner', 'direct-delivery-card-last4'].forEach(id => {
+    const field = document.getElementById(id);
+    if (field) field.disabled = active && directDeliveryPackageIndex > 0;
+  });
+}
+
+async function loadDeliveryContactSuggestions() {
+  await storageReady;
+  const ownerKey = AppState.currentUser?.role === 'customer'
+    ? `customer:${AppState.currentUser.customerId}`
+    : `admin:${AppState.currentUser?.adminId || ''}`;
+  const contacts = await readStoredState(`deliveryContacts:${ownerKey}`, []);
+  const fields = [
+    ['delivery-contact-names', 'name'],
+    ['delivery-contact-mobiles', 'mobile'],
+    ['delivery-contact-pincodes', 'pincode']
+  ];
+  fields.forEach(([listId, key]) => {
+    const list = document.getElementById(listId);
+    if (list) list.innerHTML = contacts.map(contact => `<option value="${String(contact[key] || '').replace(/[&<>"']/g, '')}"></option>`).join('');
+  });
+}
+
+async function rememberDeliveryContact(delivery) {
+  await storageReady;
+  const ownerKey = AppState.currentUser?.role === 'customer'
+    ? `customer:${AppState.currentUser.customerId}`
+    : `admin:${AppState.currentUser?.adminId || ''}`;
+  const storageKey = `deliveryContacts:${ownerKey}`;
+  const contacts = await readStoredState(storageKey, []);
+  const normalize = value => String(value || '').replace(/\D/g, '');
+  const phone = normalize(delivery.mobile);
+  const namePin = `${String(delivery.recipientName).trim().toLowerCase()}|${String(delivery.pincode).trim()}`;
+  const existing = contacts.filter(contact => normalize(contact.mobile) !== phone
+    && `${String(contact.name).trim().toLowerCase()}|${String(contact.pincode).trim()}` !== namePin);
+  existing.unshift({ name: delivery.recipientName.trim(), mobile: delivery.mobile.trim(), pincode: delivery.pincode.trim() });
+  await writeStoredState(storageKey, existing.slice(0, 50));
+}
+
+function openDirectDeliveryEntry() {
+  if (!AppState.currentUser) return;
+  directDeliveryEntry = true;
+  directDeliveryPackageIndex = 0;
+  setDirectDeliveryFieldsActive(true);
+  document.getElementById('deliv-form-order-id').value = '';
+  const productSelect = document.getElementById('direct-delivery-product');
+  productSelect.innerHTML = `${AppState.products.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}<option value="Other">Custom model</option>`;
+  const ownerSelect = document.getElementById('direct-delivery-owner');
+  const ownerField = document.getElementById('direct-delivery-owner-field');
+  if (AppState.currentUser.role === 'admin') {
+    const customers = AppState.currentUser.isMaster ? AppState.customers
+      : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
+    ownerSelect.innerHTML = `<option value="ADMIN_SELF">My admin account</option>${customers.map(customer => `<option value="${customer.id}">${customer.name} (${customer.id})</option>`).join('')}`;
+    ownerField.hidden = false;
+  } else {
+    ownerSelect.innerHTML = `<option value="${AppState.currentUser.customerId}">${AppState.currentUser.name}</option>`;
+    ownerField.hidden = true;
+  }
+  document.getElementById('direct-delivery-card-last4').value = '';
+  document.getElementById('direct-delivery-quantity').value = '1';
+  document.getElementById('deliv-form-platform').value = 'Flipkart';
+  document.getElementById('deliv-form-platform-other').value = '';
+  toggleDeliveryOtherPlatform();
+  document.getElementById('deliv-form-name').value = '';
+  document.getElementById('deliv-form-mobile').value = '';
+  document.getElementById('deliv-form-tracking').value = '';
+  document.getElementById('deliv-form-pincode').value = '';
+  document.getElementById('deliv-form-otp').value = '';
+  document.getElementById('deliv-gst-toggle').checked = false;
+  document.getElementById('deliv-gst-file-input').value = '';
+  document.getElementById('delivery-package-progress').textContent = '';
+  document.getElementById('delivery-submit-button').textContent = 'Submit Delivery';
+  AppState.tempGstFileData = null;
+  toggleGstFields();
+  handleDirectDeliveryProductChange();
+  updateDeliveryPackageProgress();
+  loadDeliveryContactSuggestions();
+  openModal('modal-delivery-submission');
+}
+
+function continueDirectDeliveryEntry(orderId) {
+  const order = AppState.orders.find(item => item.id === orderId);
+  if (!order || (order.deliveryPackages?.length || 0) >= order.quantity) return;
+  openDirectDeliveryEntry();
+  directDeliveryPackageIndex = order.deliveryPackages?.length || 0;
+  document.getElementById('deliv-form-order-id').value = order.id;
+  document.getElementById('deliv-form-model').value = order.productModel;
+  const product = AppState.products.find(item => item.name === order.productModel);
+  document.getElementById('direct-delivery-product').value = product?.id || 'Other';
+  document.getElementById('direct-delivery-custom-model').value = product ? '' : order.productModel;
+  document.getElementById('direct-delivery-custom-model').style.display = product ? 'none' : 'block';
+  document.getElementById('direct-delivery-custom-model').required = !product;
+  document.getElementById('direct-delivery-card-amount').value = order.amountPaid;
+  document.getElementById('direct-delivery-quantity').value = order.quantity;
+  document.getElementById('direct-delivery-card-last4').value = order.cardLast4 || '';
+  document.getElementById('deliv-form-platform').value = ['Flipkart', 'Amazon', 'Reliance Digital', 'Croma', 'Pinelabs', 'Apple Store'].includes(order.platform) ? order.platform : 'Other';
+  document.getElementById('deliv-form-platform-other').value = ['Flipkart', 'Amazon', 'Reliance Digital', 'Croma', 'Pinelabs', 'Apple Store', 'Other'].includes(order.platform) ? '' : order.platform;
+  toggleDeliveryOtherPlatform();
+  const ownerSelect = document.getElementById('direct-delivery-owner');
+  ownerSelect.value = order.customerId;
+  directDeliveryPackageIndex = order.deliveryPackages?.length || 0;
+  setDirectDeliveryFieldsActive(true);
+  updateDeliveryPackageProgress();
+  const previousDelivery = order.deliveryPackages?.at(-1)?.delivery;
+  document.getElementById('deliv-form-name').value = previousDelivery?.recipientName || '';
+  document.getElementById('deliv-form-mobile').value = previousDelivery?.mobile || '';
+  document.getElementById('deliv-form-pincode').value = previousDelivery?.pincode || '';
+  document.getElementById('deliv-form-tracking').value = '';
+  document.getElementById('deliv-form-otp').value = '';
+}
+
 function handleCreateBooking(e) {
   e.preventDefault();
   const pid = document.getElementById('modal-order-product').value;
@@ -1471,9 +1671,15 @@ function openDeliveryModalForOrder(orderId) {
   const o = AppState.orders.find(item => item.id === orderId);
   if (!o) return;
 
+  directDeliveryEntry = false;
+  setDirectDeliveryFieldsActive(false);
+  document.getElementById('deliv-form-platform').disabled = false;
+  document.getElementById('deliv-form-platform-other').disabled = false;
   document.getElementById('deliv-form-order-id').value = o.id;
   document.getElementById('deliv-form-model').value = o.productModel;
   document.getElementById('deliv-form-platform').value = o.platform || 'Flipkart';
+  document.getElementById('deliv-form-platform-other').value = '';
+  toggleDeliveryOtherPlatform();
   document.getElementById('deliv-form-name').value = o.delivery?.recipientName || '';
   document.getElementById('deliv-form-mobile').value = o.delivery?.mobile || '';
   document.getElementById('deliv-form-tracking').value = o.delivery?.tracking || '';
@@ -1523,16 +1729,70 @@ function recalcGstTotal() {
   document.getElementById('gst-calc-total').textContent = `₹${(base + tax).toLocaleString()}`;
 }
 
-function handleSaveDeliveryWithGst(e) {
+async function handleSaveDeliveryWithGst(e) {
   e.preventDefault();
   const orderId = document.getElementById('deliv-form-order-id').value;
-  const order = AppState.orders.find(o => o.id === orderId);
+  let order = AppState.orders.find(o => o.id === orderId);
+  if (directDeliveryEntry && !order) {
+    const selectedProductId = document.getElementById('direct-delivery-product').value;
+    const product = AppState.products.find(item => item.id === selectedProductId);
+    const productModel = selectedProductId === 'Other'
+      ? document.getElementById('direct-delivery-custom-model').value.trim()
+      : product?.name;
+    const amountPaid = Number(document.getElementById('direct-delivery-card-amount').value);
+    const quantity = Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1);
+    if (!productModel || !Number.isFinite(amountPaid) || amountPaid < 0) return alert('Choose a product and enter a valid card amount.');
+    const ownerId = document.getElementById('direct-delivery-owner').value;
+    const customer = AppState.currentUser.role === 'customer'
+      ? { id: AppState.currentUser.customerId, name: AppState.currentUser.name }
+      : ownerId === 'ADMIN_SELF'
+        ? { id: `ADMIN-SELF-${AppState.currentUser.adminId}`, name: `${AppState.currentUser.name} (Admin)` }
+        : AppState.customers.find(item => item.id === ownerId);
+    if (!customer) return alert('Choose a valid booker account.');
+    const commission = Number(product?.commission) || 0;
+    order = {
+      id: `OD${Date.now()}${Math.floor(Math.random() * 1000)}`,
+      platform: document.getElementById('deliv-form-platform').value === 'Other'
+        ? document.getElementById('deliv-form-platform-other').value.trim()
+        : document.getElementById('deliv-form-platform').value,
+      productModel,
+      customerId: customer.id,
+      customerName: customer.name,
+      adminId: customer.adminId || AppState.currentUser.adminId || AppState.adminProfile.adminId,
+      cardLast4: document.getElementById('direct-delivery-card-last4').value.trim(),
+      amountPaid,
+      quantity,
+      payableAmount: (amountPaid + commission) * quantity,
+      advancePaid: 0,
+      settledAmount: 0,
+      profit: commission * quantity,
+      status: AppState.currentUser.role === 'customer' ? 'Pending Approval' : 'Booked',
+      isToday: false,
+      createdAt: todayIsoDate(),
+      settledAt: null,
+      delivery: null,
+      deliveryPackages: [],
+      gstDetails: null
+    };
+    AppState.orders.unshift(order);
+    document.getElementById('deliv-form-order-id').value = order.id;
+    const createResult = await triggerAutoCloudSync('NEW_ORDER', { order });
+    if (createResult?.status === 'rejected') {
+      AppState.orders = AppState.orders.filter(item => item.id !== order.id);
+      document.getElementById('deliv-form-order-id').value = '';
+      persistLocalState();
+      return alert(`Order could not be created: ${createResult.error.message}`);
+    }
+  }
   if (!order) return;
 
-  order.status = 'Out for Delivery';
+  const totalPackages = directDeliveryEntry ? Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1) : 1;
+  const packageId = directDeliveryEntry ? (window.crypto?.randomUUID?.() || `pkg_${Date.now()}_${Math.random().toString(36).slice(2)}`) : '';
   order.isToday = true;
-  order.delivery = {
-    platform: document.getElementById('deliv-form-platform').value,
+  const delivery = {
+    platform: document.getElementById('deliv-form-platform').value === 'Other'
+      ? document.getElementById('deliv-form-platform-other').value.trim()
+      : document.getElementById('deliv-form-platform').value,
     recipientName: document.getElementById('deliv-form-name').value,
     mobile: document.getElementById('deliv-form-mobile').value,
     tracking: document.getElementById('deliv-form-tracking').value,
@@ -1542,13 +1802,13 @@ function handleSaveDeliveryWithGst(e) {
     deliveryDate: todayIsoDate(),
     submittedAt: new Date().toISOString()
   };
-  order.isToday = true;
 
+  let gstDetails = null;
   if (document.getElementById('deliv-gst-toggle').checked) {
     const base = Number(document.getElementById('gst-input-base').value) || 0;
     const rate = Number(document.getElementById('gst-input-rate').value) || 18;
     const tax = Math.round((base * rate) / 100);
-    order.gstDetails = {
+    gstDetails = {
       included: true,
       quantity: order.quantity || 1,
       adminId: order.adminId || '',
@@ -1567,21 +1827,81 @@ function handleSaveDeliveryWithGst(e) {
       fileUrl: AppState.tempGstFileData?.fileUrl || '',
       storagePath: AppState.tempGstFileData?.storagePath || ''
     };
-  } else {
-    order.gstDetails = null;
   }
 
+  if (directDeliveryEntry) {
+    if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
+    const packageEntry = {
+      id: packageId,
+      delivery,
+      gstDetails,
+      status: order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
+      submittedAt: new Date().toISOString()
+    };
+    order.deliveryPackages ||= [];
+    order.deliveryPackages.push(packageEntry);
+    if (!order.delivery) {
+      order.delivery = delivery;
+      order.gstDetails = gstDetails;
+    }
+    if (order.status !== 'Pending Approval') order.status = 'Out for Delivery';
+    await rememberDeliveryContact(delivery);
+    persistLocalState();
+    renderAllViews();
+    const packageResult = await triggerAutoCloudSync('DELIVERY_SUBMITTED', { order, packageEntry });
+    if (packageResult?.status === 'rejected') {
+      order.deliveryPackages = order.deliveryPackages.filter(item => item.id !== packageId);
+      if (order.deliveryPackages.length === 0) {
+        order.delivery = null;
+        order.gstDetails = null;
+        order.status = AppState.currentUser?.role === 'customer' ? 'Pending Approval' : 'Booked';
+      }
+      persistLocalState();
+      renderAllViews();
+      return alert(`Package could not be saved: ${packageResult.error.message}`);
+    }
+    directDeliveryPackageIndex++;
+    if (directDeliveryPackageIndex < totalPackages) {
+      document.getElementById('delivery-package-progress').textContent = `Package ${directDeliveryPackageIndex + 1} of ${totalPackages}`;
+      setDirectDeliveryFieldsActive(true);
+      updateDeliveryPackageProgress();
+      document.getElementById('deliv-form-name').value = delivery.recipientName;
+      document.getElementById('deliv-form-mobile').value = delivery.mobile;
+      document.getElementById('deliv-form-pincode').value = delivery.pincode;
+      document.getElementById('deliv-form-tracking').value = '';
+      document.getElementById('deliv-form-otp').value = '';
+      document.getElementById('deliv-gst-toggle').checked = false;
+      AppState.tempGstFileData = null;
+      toggleGstFields();
+      return;
+    }
+  } else {
+    order.status = 'Out for Delivery';
+    order.delivery = delivery;
+    order.gstDetails = gstDetails;
+    renderAllViews();
+    triggerAutoCloudSync('DELIVERY_SUBMITTED', { order });
+  }
+  directDeliveryEntry = false;
   closeModal('modal-delivery-submission');
   renderAllViews();
-  triggerAutoCloudSync('DELIVERY_SUBMITTED', { order });
 }
 
-function markOrderDelivered(orderId) {
+function markOrderDelivered(orderId, packageId = '') {
   const o = AppState.orders.find(item => item.id === orderId);
   if (o && confirm(`Mark ${o.id} Delivered?`)) {
-    o.status = 'Delivered';
+    if (packageId) {
+      const packageEntry = o.deliveryPackages?.find(item => item.id === packageId);
+      if (!packageEntry) return;
+      packageEntry.status = 'Delivered';
+      if (o.deliveryPackages.every(item => item.status === 'Delivered')) o.status = 'Delivered';
+      persistLocalState();
+      triggerAutoCloudSync('PACKAGE_STATUS_CHANGED', { orderId, packageId, status: 'Delivered' });
+    } else {
+      o.status = 'Delivered';
+      triggerAutoCloudSync('STATUS_CHANGED', { order: o });
+    }
     renderAllViews();
-    triggerAutoCloudSync('STATUS_CHANGED', { order: o });
   }
 }
 
@@ -1753,7 +2073,7 @@ function renderTodayDeliveryTable() {
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong></td>
+        <td><strong>${o.productModel}</strong>${o.packageId ? `<br><small>Package ${o.packageNumber} of ${o.quantity}</small>` : ''}</td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
@@ -1857,10 +2177,10 @@ function triggerBlobDownload(content, filename, contentType) {
 }
 
 function exportFilteredDeliveriesToExcel() {
-  let csv = "Platform,Product Model,Recipient Name,Phone,Tracking,OTP,Pincode,Status\n";
-  getFilteredDeliveries().forEach(o => {
-    const d = o.delivery;
-    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.status}"\n`;
+  let csv = "Platform,Product Model,Order ID,Package,Recipient Name,Phone,Tracking,OTP,Pincode,Status\n";
+  getFilteredDeliveries().forEach(entry => {
+    const { order: o, delivery: d } = entry;
+    csv += `"${d.platform}","${o.productModel}","${o.id}","${entry.packageNumber || ''}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${entry.status}"\n`;
   });
   triggerBlobDownload(csv, 'All_Deliveries_Registry.csv', 'text/csv;charset=utf-8;');
 }
@@ -1869,14 +2189,24 @@ function getFilteredDeliveries() {
   const search = (document.getElementById('delivery-search')?.value || '').toLowerCase();
   const platform = document.getElementById('delivery-platform-filter')?.value || 'ALL';
   const date = document.getElementById('delivery-date-filter')?.value || todayIsoDate();
-  return getVisibleOrders().filter(order => {
-    const delivery = order.delivery;
-    if (!delivery?.submitted || getDeliveryDate(order) !== date) return false;
+  return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+    order,
+    ...entry,
+    packageNumber: entry.packageEntry ? index + 1 : 0
+  }))).filter(entry => {
+    const delivery = entry.delivery;
+    if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== date) return false;
     if (platform !== 'ALL' && delivery.platform !== platform) return false;
     if (!search) return true;
-    return [delivery.pincode, delivery.tracking, delivery.recipientName, order.productModel]
+    return [delivery.pincode, delivery.tracking, delivery.recipientName, entry.order.productModel]
       .some(value => String(value || '').toLowerCase().includes(search));
-  });
+  }).map(entry => ({
+    ...entry.order,
+    delivery: entry.delivery,
+    status: entry.status || entry.order.status,
+    packageId: entry.id,
+    packageNumber: entry.packageNumber
+  }));
 }
 
 function exportTodayDeliveriesToExcel() {
@@ -1885,10 +2215,10 @@ function exportTodayDeliveriesToExcel() {
     alert('No active delivery dispatches found for today.');
     return;
   }
-  let csv = "Platform,Model,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order ID,Card Last 4\n";
+  let csv = "Platform,Model,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order ID,Package,Card Last 4\n";
   todayList.forEach(o => {
     const d = o.delivery;
-    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.id}","${o.cardLast4}"\n`;
+    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.id}","${o.packageNumber || ''}","${o.cardLast4}"\n`;
   });
   triggerBlobDownload(csv, `Deliveries_Today_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
@@ -1897,14 +2227,24 @@ function getTodayModalDeliveries() {
   const fPin = (document.getElementById('today-filter-pin')?.value || '').trim().toLowerCase();
   const fName = (document.getElementById('today-filter-name')?.value || '').toLowerCase().trim();
   const fProd = (document.getElementById('today-filter-product')?.value || '').toLowerCase().trim();
-  return getVisibleOrders().filter(order => {
-    const delivery = order.delivery;
-    if (!delivery?.submitted || getDeliveryDate(order) !== todayIsoDate()) return false;
+  return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+    order,
+    ...entry,
+    packageNumber: entry.packageEntry ? index + 1 : 0
+  }))).filter(entry => {
+    const delivery = entry.delivery;
+    if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== todayIsoDate()) return false;
     if (fPin && !String(delivery.pincode || '').toLowerCase().includes(fPin)) return false;
     if (fName && !String(delivery.recipientName || '').toLowerCase().includes(fName)) return false;
-    if (fProd && !String(order.productModel || '').toLowerCase().includes(fProd)) return false;
+    if (fProd && !String(entry.order.productModel || '').toLowerCase().includes(fProd)) return false;
     return true;
-  });
+  }).map(entry => ({
+    ...entry.order,
+    delivery: entry.delivery,
+    status: entry.status || entry.order.status,
+    packageId: entry.id,
+    packageNumber: entry.packageNumber
+  }));
 }
 
 function exportCustomerLedgerCSV() {
@@ -1930,11 +2270,12 @@ function downloadAllInvoicesCSV() {
   triggerBlobDownload(csv, 'GST_Invoices_Master_List.csv', 'text/csv;charset=utf-8;');
 }
 
-function downloadSingleInvoice(orderId) {
+function downloadSingleInvoice(orderId, packageId = '') {
   const order = AppState.orders.find(o => o.id === orderId);
-  if (!order || !order.gstDetails) return;
-  const fileId = order.gstDetails.fileId;
-  const url = fileId ? `${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}` : order.gstDetails.fileData;
+  const gstDetails = packageId ? order?.deliveryPackages?.find(item => item.id === packageId)?.gstDetails : order?.gstDetails;
+  if (!order || !gstDetails) return;
+  const fileId = gstDetails.fileId;
+  const url = fileId ? `${API_CONFIG.baseUrl}/invoices/${encodeURIComponent(fileId)}` : gstDetails.fileData;
   if (!url) return;
   fetch(url, fileId ? {
     headers: {
@@ -1947,7 +2288,7 @@ function downloadSingleInvoice(orderId) {
   }).then(blob => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = order.gstDetails.fileName || `GST_${order.id}.jpg`;
+    a.download = gstDetails.fileName || `GST_${order.id}.jpg`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1968,10 +2309,11 @@ function exportLifetimeBookingsToExcel() {
   triggerBlobDownload(csv, `Lifetime_Settled_Deals_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
 
-async function viewGstInvoice(orderId) {
+async function viewGstInvoice(orderId, packageId = '') {
   const order = AppState.orders.find(o => o.id === orderId);
-  if (!order || !order.gstDetails) return;
-  const g = order.gstDetails;
+  const packageEntry = order?.deliveryPackages?.find(item => item.id === packageId);
+  const g = packageId ? packageEntry?.gstDetails : order?.gstDetails;
+  if (!order || !g) return;
   const isPdf = g.contentType === 'application/pdf' || String(g.fileName || '').toLowerCase().endsWith('.pdf');
   document.getElementById('preview-invoice-title').textContent = `GST Bill - ${order.productModel}`;
   const body = document.getElementById('preview-invoice-body');
@@ -1993,11 +2335,12 @@ async function viewGstInvoice(orderId) {
     body.firstElementChild.textContent = 'Invoice attachment unavailable.';
     console.warn('Invoice preview unavailable:', error.message);
   }
-  document.getElementById('btn-download-active-invoice').onclick = () => downloadSingleInvoice(order.id);
+  document.getElementById('btn-download-active-invoice').onclick = () => downloadSingleInvoice(order.id, packageId);
   document.getElementById('btn-edit-active-invoice').onclick = () => {
     closeModal('modal-view-invoice');
-    editGstInvoice(order.id);
+    editGstInvoice(order.id, packageId);
   };
+  document.getElementById('btn-edit-active-invoice').hidden = Boolean(packageId);
   openModal('modal-view-invoice');
 }
 

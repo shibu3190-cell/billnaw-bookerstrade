@@ -103,7 +103,7 @@ async function deleteOldInvoiceFiles() {
   return deletedFileIds;
 }
 
-async function uploadInvoiceFile(gstDetails, orderId) {
+async function uploadInvoiceFile(gstDetails, orderId, stableFileId = false) {
   if (!gstDetails?.fileData) return { gstDetails, deletedFileIds: [] };
 
   const match = /^data:([^;]+);base64,(.+)$/.exec(gstDetails.fileData);
@@ -114,7 +114,7 @@ async function uploadInvoiceFile(gstDetails, orderId) {
     throw new Error('Unsupported invoice attachment type.');
   }
 
-  const fileId = /^[a-zA-Z0-9_-]{8,120}$/.test(gstDetails.fileId || '') && !gstDetails.fileData
+  const fileId = stableFileId && /^[a-zA-Z0-9_-]{8,120}$/.test(gstDetails.fileId || '')
     ? gstDetails.fileId
     : `invoice_${crypto.randomUUID()}`;
   const existing = await db.collection('invoiceFiles').doc(fileId).get();
@@ -306,8 +306,19 @@ app.delete('/api/invoices/:fileId', authenticate, requireSession, async (req, re
     await invoiceRef.update({ storagePath: '', fileUrl: '', deletedAt: new Date().toISOString() });
     if (orderRef) {
       const orderSnapshot = await orderRef.get();
-      if (orderSnapshot.exists && orderSnapshot.data().gstDetails?.fileId === (record.fileId || req.params.fileId)) {
-        await orderRef.update({ gstDetails: { ...orderSnapshot.data().gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true } });
+      if (orderSnapshot.exists) {
+        const orderData = orderSnapshot.data();
+        const fileId = record.fileId || req.params.fileId;
+        const patch = {};
+        if (orderData.gstDetails?.fileId === fileId) {
+          patch.gstDetails = { ...orderData.gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true };
+        }
+        if (Array.isArray(orderData.deliveryPackages)) {
+          patch.deliveryPackages = orderData.deliveryPackages.map(packageEntry => packageEntry.gstDetails?.fileId === fileId
+            ? { ...packageEntry, gstDetails: { ...packageEntry.gstDetails, fileData: '', fileUrl: '', storagePath: '', attachmentDeleted: true } }
+            : packageEntry);
+        }
+        if (Object.keys(patch).length) await orderRef.update(patch);
       }
     }
     res.json({ success: true, fileId: record.fileId || req.params.fileId });
@@ -416,6 +427,38 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
     if (!actor || (actor.role === 'admin' && !actor.isMaster && !sameOwner(order.adminId, actor.adminId)) || (actor.role === 'customer' && String(order.customerId || '').trim() !== String(actor.customerId || '').trim())) {
       return res.status(403).json({ success: false, message: 'You can only create bookings for your own account.' });
     }
+    if (actor.role === 'admin') {
+      const selfCustomerId = `ADMIN-SELF-${actor.adminId}`;
+      if (String(order.customerId || '').trim() === selfCustomerId) {
+        if (!sameOwner(order.adminId, actor.adminId)) return res.status(403).json({ success: false, message: 'Admin self-orders must belong to the signed-in admin.' });
+      } else {
+        const customerId = String(order.customerId || '').trim();
+        const customerSnapshot = await db.collection('customers').doc(customerId).get();
+        let customerOwner = customerSnapshot.exists ? customerSnapshot.data().adminId : '';
+        if (!customerSnapshot.exists) {
+          const sheetResult = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Customers!A:Z' });
+          const sheetCustomer = sheetRowsToObjects(sheetResult.data.values || []).find(record =>
+            String(record['Customer ID'] || record.customerId || record.id || '').trim() === customerId);
+          customerOwner = sheetCustomer?.['Admin ID'] || sheetCustomer?.adminId || '';
+        }
+        if (!customerOwner || !sameOwner(customerOwner, order.adminId)
+          || (!actor.isMaster && !sameOwner(customerOwner, actor.adminId))) {
+          return res.status(403).json({ success: false, message: 'Choose a valid booker managed by this admin.' });
+        }
+      }
+    }
+    const orderRef = db.collection('orders').doc(String(order.id));
+    const existingOrder = await orderRef.get();
+    if (existingOrder.exists) {
+      const saved = existingOrder.data();
+      const sameRequest = String(saved.customerId || '').trim() === String(order.customerId || '').trim()
+        && sameOwner(saved.adminId, order.adminId)
+        && saved.productModel === order.productModel
+        && Number(saved.amountPaid) === Number(order.amountPaid)
+        && Number(saved.quantity) === Number(order.quantity);
+      if (!sameRequest) return res.status(409).json({ success: false, message: 'That order ID already exists with different order data.' });
+      return res.json({ success: true, duplicate: true });
+    }
     await tryFirestore(
       () => db.collection('orders').doc(order.id).set(order),
       `save order ${order.id}`
@@ -455,7 +498,7 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
 // 2. Delivery & GST Submission
 app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) => {
   try {
-    const { orderId, platform, model, delivery, gstDetails } = req.body;
+    const { orderId, platform, model, delivery, gstDetails, packageEntry } = req.body;
     if (!orderId || !delivery || typeof delivery !== 'object') {
       return res.status(400).json({ success: false, message: 'orderId and delivery details are required.' });
     }
@@ -469,6 +512,68 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       ? sameOwner(existingOrder.adminId, actor.adminId)
       : String(existingOrder.customerId || '').trim() === String(actor.customerId || '').trim());
     if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only edit your own booking.' });
+
+    if (packageEntry) {
+      const packageId = String(packageEntry.id || '').trim();
+      if (!packageId || !packageEntry.delivery || typeof packageEntry.delivery !== 'object') {
+        return res.status(400).json({ success: false, message: 'A package id and delivery details are required.' });
+      }
+      const uploaded = await uploadInvoiceFile(packageEntry.gstDetails, orderId, true);
+      const persistedPackage = {
+        id: packageId,
+        delivery: packageEntry.delivery,
+        gstDetails: uploaded.gstDetails ? {
+          ...uploaded.gstDetails,
+          adminId: existingOrder.adminId || '',
+          customerId: existingOrder.customerId || '',
+          orderId,
+          packageId
+        } : null,
+        status: existingOrder.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
+        submittedAt: packageEntry.submittedAt || new Date().toISOString()
+      };
+
+      await db.runTransaction(async transaction => {
+        const freshSnapshot = await transaction.get(orderRef);
+        if (!freshSnapshot.exists) throw new Error('Booking not found.');
+        const current = freshSnapshot.data();
+        const packages = Array.isArray(current.deliveryPackages) ? current.deliveryPackages : [];
+        const existingIndex = packages.findIndex(item => item.id === packageId);
+        if (existingIndex === -1) packages.push(persistedPackage);
+        else packages[existingIndex] = persistedPackage;
+        const patch = {
+          deliveryPackages: packages,
+          status: current.status === 'Pending Approval' ? current.status : 'Out for Delivery',
+          isToday: current.status !== 'Pending Approval'
+        };
+        if (!current.delivery) {
+          patch.delivery = persistedPackage.delivery;
+          patch.gstDetails = persistedPackage.gstDetails;
+        }
+        transaction.update(orderRef, patch);
+      });
+
+      await ensureSheetTab('Delivery_Packages', [
+        'Package ID', 'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
+        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status'
+      ]);
+      const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' });
+      const packageRow = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
+      const packageValues = [[
+        packageId, orderId, platform || persistedPackage.delivery.platform, model || existingOrder.productModel,
+        persistedPackage.delivery.recipientName, persistedPackage.delivery.mobile, persistedPackage.delivery.tracking,
+        persistedPackage.delivery.otp, persistedPackage.delivery.pincode,
+        persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
+        persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
+        persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status
+      ]];
+      if (packageRow > 0) {
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:P${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+      } else {
+        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:P', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+      }
+      return res.json({ success: true, packageId, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
+    }
 
     const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId);
     const persistedGstDetails = uploadedInvoice.gstDetails?.fileData === ''
@@ -522,6 +627,45 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
     res.json({ success: true, file: persistedGstDetails?.fileId ? persistedGstDetails : null, deletedFileIds: uploadedInvoice.deletedFileIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orders/package-status', authenticate, requireSession, async (req, res) => {
+  try {
+    const { orderId, packageId, status } = req.body;
+    const actor = requireAdminSession(req, res);
+    if (!actor) return;
+    if (!orderId || !packageId || status !== 'Delivered') {
+      return res.status(400).json({ success: false, message: 'orderId, packageId, and a valid status are required.' });
+    }
+    const orderRef = db.collection('orders').doc(orderId);
+    const orderSnapshot = await orderRef.get();
+    if (!orderSnapshot.exists) return res.status(404).json({ success: false, message: 'Booking not found.' });
+    const order = orderSnapshot.data();
+    const ownsOrder = actor.isMaster || (actor.role === 'admin'
+      ? sameOwner(order.adminId, actor.adminId)
+      : String(order.customerId || '').trim() === String(actor.customerId || '').trim());
+    if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only update your own booking.' });
+    const result = await db.runTransaction(async transaction => {
+      const freshSnapshot = await transaction.get(orderRef);
+      if (!freshSnapshot.exists) throw new Error('Booking not found.');
+      const current = freshSnapshot.data();
+      const packages = Array.isArray(current.deliveryPackages) ? current.deliveryPackages : [];
+      const packageIndex = packages.findIndex(item => item.id === packageId);
+      if (packageIndex < 0) throw new Error('Delivery package not found.');
+      packages[packageIndex] = { ...packages[packageIndex], status };
+      const allDelivered = packages.length > 0 && packages.every(item => item.status === 'Delivered');
+      transaction.update(orderRef, { deliveryPackages: packages, ...(allDelivered ? { status: 'Delivered' } : {}) });
+      return { allDelivered, orderStatus: allDelivered ? 'Delivered' : current.status };
+    });
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' }).catch(() => ({ data: { values: [] } }));
+    const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
+    if (rowIndex > 0) {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!P${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [[status]] } });
+    }
+    res.json({ success: true, orderId, packageId, status, orderStatus: result.orderStatus });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -580,11 +724,21 @@ app.post('/api/orders/approve', authenticate, requireSession, async (req, res) =
     if (!order && rowIndex > 0) order = { adminId: rows[rowIndex][12], status: rows[rowIndex][10] };
     if (!order) return res.status(404).json({ success: false, message: 'Booking not found.' });
     if (!actor.isMaster && order.adminId !== actor.adminId) return res.status(403).json({ success: false, message: 'Only the owning admin can approve this booking.' });
-    await tryFirestore(() => orderRef.update({ status: 'Booked', approvedBy: actor.adminId, approvedAt: new Date().toISOString() }), `approve order ${orderId}`);
+    const hasPackages = Array.isArray(order.deliveryPackages) && order.deliveryPackages.length > 0;
+    const approvedStatus = hasPackages ? 'Out for Delivery' : 'Booked';
+    const deliveryPackages = hasPackages
+      ? order.deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }))
+      : order.deliveryPackages;
+    await tryFirestore(() => orderRef.update({
+      status: approvedStatus,
+      ...(hasPackages ? { deliveryPackages, isToday: true } : {}),
+      approvedBy: actor.adminId,
+      approvedAt: new Date().toISOString()
+    }), `approve order ${orderId}`);
     if (rowIndex > 0) {
-      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!K${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [['Booked']] } });
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!K${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [[approvedStatus]] } });
     }
-    res.json({ success: true, orderId, status: 'Booked' });
+    res.json({ success: true, orderId, status: approvedStatus });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

@@ -667,3 +667,26 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
   padding-top: 12px;
   line-height: 1.5;
 }
+
+.delivery-add-button {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.delivery-package-progress {
+  min-height: 1.4em;
+  margin: 2px 0 12px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.direct-delivery-fields[hidden] { display: none; }
+
+@media (max-width: 600px) {
+  #tab-delivery .filter-bar { align-items: stretch; }
+  #tab-delivery .filter-bar > div:last-child { justify-content: flex-end; }
+}

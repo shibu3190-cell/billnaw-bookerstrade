@@ -1,4 +1,4 @@
-const CACHE_NAME = 'devicetrade-v16';
+const CACHE_NAME = 'devicetrade-v17';
 const STATIC_ASSETS = [
   './',
   './index.html',

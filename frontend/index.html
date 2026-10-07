@@ -197,7 +197,10 @@
             </select>
             <input type="date" id="delivery-date-filter" class="input-search" onchange="renderDeliveryTable()" />
           </div>
-          <button class="btn btn-excel btn-sm" onclick="exportFilteredDeliveriesToExcel()">Export Deliveries (.csv)</button>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button class="btn btn-primary btn-sm delivery-add-button" onclick="openDirectDeliveryEntry()" aria-label="Add delivery" title="Add delivery">+</button>
+            <button class="btn btn-excel btn-sm" onclick="exportFilteredDeliveriesToExcel()">Export Deliveries (.csv)</button>
+          </div>
         </div>
 
         <div class="table-card">
@@ -528,6 +531,32 @@
       </div>
       <form onsubmit="handleSaveDeliveryWithGst(event)">
         <input type="hidden" id="deliv-form-order-id" />
+        <div id="direct-delivery-fields" class="direct-delivery-fields" hidden>
+          <div class="form-grid two-col">
+            <div class="form-field">
+              <label class="form-label" for="direct-delivery-product">Saved product or custom model</label>
+              <select id="direct-delivery-product" class="form-select" onchange="handleDirectDeliveryProductChange()"></select>
+              <input type="text" id="direct-delivery-custom-model" class="form-input" placeholder="Enter product model" style="display:none; margin-top:6px;" />
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="direct-delivery-card-amount">Amount paid on card (₹)</label>
+              <input type="number" id="direct-delivery-card-amount" class="form-input" min="0" step="0.01" required />
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="direct-delivery-quantity">Quantity</label>
+              <input type="number" id="direct-delivery-quantity" class="form-input" min="1" step="1" value="1" oninput="updateDeliveryPackageProgress()" required />
+            </div>
+            <div class="form-field" id="direct-delivery-owner-field">
+              <label class="form-label" for="direct-delivery-owner">Order owner</label>
+              <select id="direct-delivery-owner" class="form-select"></select>
+            </div>
+          </div>
+          <div class="form-field" id="direct-delivery-card-field">
+            <label class="form-label" for="direct-delivery-card-last4">Card last 4 digits (optional)</label>
+            <input type="text" id="direct-delivery-card-last4" class="form-input" inputmode="numeric" maxlength="4" pattern="[0-9]{0,4}" placeholder="Optional" />
+          </div>
+          <div id="delivery-package-progress" class="delivery-package-progress" aria-live="polite"></div>
+        </div>
         
         <div class="form-grid two-col">
           <div class="form-field">
@@ -536,7 +565,7 @@
           </div>
           <div class="form-field">
             <label class="form-label">Platform / Merchant</label>
-            <select id="deliv-form-platform" class="form-select" required>
+            <select id="deliv-form-platform" class="form-select" onchange="toggleDeliveryOtherPlatform()" required>
               <option value="Flipkart">Flipkart</option>
               <option value="Amazon">Amazon</option>
               <option value="Reliance Digital">Reliance Digital</option>
@@ -545,17 +574,20 @@
               <option value="Apple Store">Apple Store</option>
               <option value="Other">Other</option>
             </select>
+            <input type="text" id="deliv-form-platform-other" class="form-input" placeholder="Enter platform / merchant" style="display:none; margin-top:6px;" />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
             <label class="form-label">Recipient Name</label>
-            <input type="text" id="deliv-form-name" class="form-input" value="Abhijit Modak" required />
+            <input type="text" id="deliv-form-name" class="form-input" list="delivery-contact-names" required />
+            <datalist id="delivery-contact-names"></datalist>
           </div>
           <div class="form-field">
             <label class="form-label">Mobile Number</label>
-            <input type="tel" id="deliv-form-mobile" class="form-input" value="7699434637" required />
+            <input type="tel" id="deliv-form-mobile" class="form-input" list="delivery-contact-mobiles" required />
+            <datalist id="delivery-contact-mobiles"></datalist>
           </div>
         </div>
 
@@ -566,7 +598,8 @@
           </div>
           <div class="form-field">
             <label class="form-label">Pincode</label>
-            <input type="text" id="deliv-form-pincode" class="form-input" placeholder="e.g. 251001" required />
+            <input type="text" id="deliv-form-pincode" class="form-input" list="delivery-contact-pincodes" placeholder="e.g. 251001" required />
+            <datalist id="delivery-contact-pincodes"></datalist>
           </div>
         </div>
 
@@ -635,7 +668,7 @@
           </div>
         </div>
 
-        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 6px;">Submit Delivery Details</button>
+        <button id="delivery-submit-button" type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 6px;">Submit Delivery Details</button>
       </form>
     </div>
   </div>
