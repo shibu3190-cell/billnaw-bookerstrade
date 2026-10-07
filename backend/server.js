@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { google } = require('googleapis');
+const { allocateDeliveryPackageIdentity } = require('./delivery-packages');
 
 // Absolute path to .env file so it loads regardless of execution directory
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -519,7 +520,7 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
         return res.status(400).json({ success: false, message: 'A package id and delivery details are required.' });
       }
       const uploaded = await uploadInvoiceFile(packageEntry.gstDetails, orderId, true);
-      const persistedPackage = {
+      let persistedPackage = {
         id: packageId,
         delivery: packageEntry.delivery,
         gstDetails: uploaded.gstDetails ? {
@@ -538,9 +539,11 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
         if (!freshSnapshot.exists) throw new Error('Booking not found.');
         const current = freshSnapshot.data();
         const packages = Array.isArray(current.deliveryPackages) ? current.deliveryPackages : [];
-        const existingIndex = packages.findIndex(item => item.id === packageId);
-        if (existingIndex === -1) packages.push(persistedPackage);
-        else packages[existingIndex] = persistedPackage;
+        const identity = allocateDeliveryPackageIdentity(packages, packageId, current.quantity);
+        persistedPackage.sequence = identity.sequence;
+        persistedPackage.doNumber = identity.doNumber;
+        if (identity.existingIndex >= 0) packages[identity.existingIndex] = persistedPackage;
+        else packages.push(persistedPackage);
         const patch = {
           deliveryPackages: packages,
           status: current.status === 'Pending Approval' ? current.status : 'Out for Delivery',
@@ -555,8 +558,13 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
 
       await ensureSheetTab('Delivery_Packages', [
         'Package ID', 'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
-        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status'
+        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status', 'Delivery No', 'Sequence', 'Delivery Date'
       ]);
+      const existingHeaders = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:S1' }).catch(() => ({ data: { values: [] } }));
+      const headers = existingHeaders.data.values?.[0] || [];
+      if (headers[0] !== 'Delivery No' || headers[1] !== 'Sequence' || headers[2] !== 'Delivery Date') {
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:S1', valueInputOption: 'RAW', resource: { values: [['Delivery No', 'Sequence', 'Delivery Date']] } });
+      }
       const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' });
       const packageRow = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
       const packageValues = [[
@@ -565,14 +573,15 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
         persistedPackage.delivery.otp, persistedPackage.delivery.pincode,
         persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
         persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
-        persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status
+        persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status,
+        persistedPackage.doNumber, persistedPackage.sequence, persistedPackage.delivery.deliveryDate || ''
       ]];
       if (packageRow > 0) {
-        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:P${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:S${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
       } else {
-        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:P', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:S', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
       }
-      return res.json({ success: true, packageId, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
+      return res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
     }
 
     const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId);
@@ -626,7 +635,8 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
 
     res.json({ success: true, file: persistedGstDetails?.fileId ? persistedGstDetails : null, deletedFileIds: uploadedInvoice.deletedFileIds });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const status = err.status || 500;
+    res.status(status).json({ error: err.message });
   }
 });
 
@@ -737,6 +747,20 @@ app.post('/api/orders/approve', authenticate, requireSession, async (req, res) =
     }), `approve order ${orderId}`);
     if (rowIndex > 0) {
       await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!K${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [[approvedStatus]] } });
+    }
+    if (hasPackages) {
+      const packageRows = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:P' }).catch(() => ({ data: { values: [] } }));
+      const packageValues = packageRows.data.values || [];
+      const packageStatusUpdates = order.deliveryPackages.map(packageEntry => {
+        const packageRow = packageValues.findIndex(row => row[0] === packageEntry.id);
+        return packageRow > 0 ? sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `Delivery_Packages!P${packageRow + 1}`,
+          valueInputOption: 'USER_ENTERED',
+          resource: { values: [['Out for Delivery']] }
+        }) : null;
+      }).filter(Boolean);
+      await Promise.all(packageStatusUpdates);
     }
     res.json({ success: true, orderId, status: approvedStatus });
   } catch (err) {
@@ -1069,6 +1093,16 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
         }
         throw error;
       }
+    }
+    try {
+      const packageResult = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:S' });
+      const visibleOrderIds = new Set((response.orders || []).map(record =>
+        String(record['Order ID'] || record.orderId || record.id || '').trim()).filter(Boolean));
+      response.delivery_packages = sheetRowsToObjects(packageResult.data.values || []).filter(record =>
+        visibleOrderIds.has(String(record['Order ID'] || record.orderId || '').trim()));
+    } catch (error) {
+      if (error.code === 400 || error.code === 404) response.delivery_packages = [];
+      else throw error;
     }
     res.json({ success: true, spreadsheetId: SPREADSHEET_ID, data: response });
   } catch (err) {

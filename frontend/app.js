@@ -288,6 +288,7 @@ async function syncCloudData(showResult = false) {
       })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || sameAdminId(product.adminId, AppState.currentUser?.adminId)));
     }
     if (AppState.currentUser) {
+      const previousPackagesByOrder = new Map(AppState.orders.map(order => [order.id, order.deliveryPackages || []]));
       AppState.orders = orders.map(order => normalizeOrder({
         id: order['Order ID'] || order.id,
         platform: order.Platform || order.platform || 'Other',
@@ -306,8 +307,64 @@ async function syncCloudData(showResult = false) {
         adminId: order['Admin ID'] || order.adminId || AppState.adminProfile.adminId,
         isToday: order.isToday === true || order.isToday === 'true',
         delivery: order.delivery || null,
+        deliveryPackages: Array.isArray(order.deliveryPackages)
+          ? order.deliveryPackages
+          : previousPackagesByOrder.get(String(order['Order ID'] || order.id || '').trim()) || [],
         gstDetails: order.gstDetails ? { ...order.gstDetails, adminId: order.gstDetails.adminId || order.adminId, customerId: order.gstDetails.customerId || order.customerId, quantity: order.gstDetails.quantity || (Number(order.Quantity) || 1) } : null
       })).filter(order => order.id);
+      const packagesByOrder = new Map();
+      (data.delivery_packages || []).forEach(record => {
+        const orderId = String(record['Order ID'] || record.orderId || '').trim();
+        const packageId = String(record['Package ID'] || record.id || '').trim();
+        if (!orderId || !packageId) return;
+        const importedPackage = {
+          id: packageId,
+          sequence: Number(record.Sequence || record.sequence) || 0,
+          doNumber: String(record['Delivery No'] || record.doNumber || '').trim(),
+          delivery: {
+            platform: record.Platform || record.platform || 'Other',
+            recipientName: record['Recipient Name'] || record.recipientName || '',
+            mobile: record.Mobile || record.mobile || '',
+            tracking: record['Tracking AWB'] || record.tracking || '',
+            otp: record.OTP || record.otp || '',
+            pincode: record.Pincode || record.pincode || '',
+            submitted: true,
+            deliveryDate: record['Delivery Date'] || String(record.Timestamp || '').slice(0, 10),
+            submittedAt: record.Timestamp || record.submittedAt || ''
+          },
+          gstDetails: record.GSTIN && record.GSTIN !== 'N/A' ? {
+            included: true,
+            gstNumber: record.GSTIN,
+            shopName: record['Shop Name'] || '',
+            baseAmount: csvOrNumber(record['Base Amount']),
+            gstAmount: csvOrNumber(record['GST Tax Amount']),
+            totalAmount: csvOrNumber(record['Gross Total'])
+          } : null,
+          status: record.Status || record.status || 'Out for Delivery',
+          submittedAt: record.Timestamp || record.submittedAt || ''
+        };
+        if (!packagesByOrder.has(orderId)) packagesByOrder.set(orderId, []);
+        packagesByOrder.get(orderId).push(importedPackage);
+      });
+      AppState.orders = AppState.orders.map(order => {
+        const sheetPackages = packagesByOrder.get(order.id);
+        if (!sheetPackages?.length) return normalizeOrder(order);
+        const existingPackages = new Map((order.deliveryPackages || []).map(packageEntry => [packageEntry.id, packageEntry]));
+        sheetPackages.forEach(importedPackage => {
+          const existingPackage = existingPackages.get(importedPackage.id) || {};
+          existingPackages.set(importedPackage.id, {
+            ...importedPackage,
+            ...existingPackage,
+            sequence: Number(existingPackage.sequence) || importedPackage.sequence,
+            doNumber: existingPackage.doNumber || importedPackage.doNumber,
+            delivery: { ...importedPackage.delivery, ...(existingPackage.delivery || {}) },
+            gstDetails: existingPackage.gstDetails || importedPackage.gstDetails
+          });
+        });
+        const deliveryPackages = [...existingPackages.values()].sort((left, right) =>
+          (Number(left.sequence) || 0) - (Number(right.sequence) || 0));
+        return normalizeOrder({ ...order, deliveryPackages });
+      });
     }
 
     persistLocalState();
@@ -399,6 +456,13 @@ function applyCloudInvoiceResult(order, result) {
   if (result.packageId && result.file) {
     const packageEntry = order.deliveryPackages?.find(item => item.id === result.packageId);
     if (packageEntry) packageEntry.gstDetails = { ...packageEntry.gstDetails, ...result.file, fileData: '' };
+  }
+  if (result.packageId && (result.sequence || result.doNumber)) {
+    const packageEntry = order.deliveryPackages?.find(item => item.id === result.packageId);
+    if (packageEntry) {
+      packageEntry.sequence = Number(result.sequence) || packageEntry.sequence;
+      packageEntry.doNumber = result.doNumber || `DO${packageEntry.sequence}`;
+    }
   }
   persistLocalState();
 }
@@ -601,6 +665,23 @@ function normalizeOrder(order) {
     quantity: Math.max(1, Number(order.quantity) || 1),
     createdAt: order.createdAt || todayIsoDate(),
     delivery,
+    deliveryPackages: (Array.isArray(order.deliveryPackages) ? order.deliveryPackages : []).map((packageEntry, index) => {
+      const sequence = Number(packageEntry.sequence) || index + 1;
+      return {
+        ...packageEntry,
+        id: String(packageEntry.id || ''),
+        sequence,
+        doNumber: packageEntry.doNumber || `DO${sequence}`,
+        delivery: packageEntry.delivery ? {
+          ...packageEntry.delivery,
+          platform: packageEntry.delivery.platform || order.platform || 'Other',
+          pincode: String(packageEntry.delivery.pincode || ''),
+          tracking: String(packageEntry.delivery.tracking || ''),
+          recipientName: String(packageEntry.delivery.recipientName || ''),
+          deliveryDate: packageEntry.delivery.deliveryDate || packageEntry.delivery.submittedAt || order.createdAt || todayIsoDate()
+        } : null
+      };
+    }),
     isToday: delivery?.deliveryDate === todayIsoDate(),
     gstDetails: order.gstDetails || null
   };
@@ -1114,6 +1195,8 @@ function orderDeliveryEntries(order) {
   const packages = Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [];
   if (packages.length) return packages.map(packageEntry => ({
     id: packageEntry.id,
+    sequence: Number(packageEntry.sequence) || 0,
+    doNumber: packageEntry.doNumber || '',
     delivery: packageEntry.delivery,
     gstDetails: packageEntry.gstDetails,
     status: packageEntry.status || (order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery'),
@@ -1132,7 +1215,12 @@ function renderDeliveryTable() {
   const isAdmin = AppState.currentUser?.role === 'admin';
   const selectedDate = document.getElementById('delivery-date-filter')?.value || todayIsoDate();
 
-  const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map(entry => ({ order, ...entry }))).filter(item => {
+  const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+    order,
+    ...entry,
+    sequence: entry.sequence || (entry.packageEntry ? index + 1 : 0),
+    doNumber: entry.doNumber || (entry.packageEntry ? `DO${entry.sequence || index + 1}` : '')
+  }))).filter(item => {
     const o = item.order;
     const d = item.delivery;
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
@@ -1140,13 +1228,15 @@ function renderDeliveryTable() {
     if ((d.deliveryDate || o.createdAt) !== selectedDate) return false;
     if (platFilter !== 'ALL' && d.platform !== platFilter) return false;
     if (search) {
-      return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search) || o.productModel.toLowerCase().includes(search);
+      return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search)
+        || o.productModel.toLowerCase().includes(search) || o.id.toLowerCase().includes(search)
+        || item.doNumber.toLowerCase().includes(search);
     }
     return true;
   });
 
   if (deliveries.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:20px;">No deliveries found.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; color:var(--text-muted); padding:20px;">No deliveries found.</td></tr>`;
     return;
   }
 
@@ -1156,7 +1246,9 @@ function renderDeliveryTable() {
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong>${packageId ? `<br><small>Package ${o.deliveryPackages.findIndex(entry => entry.id === packageId) + 1} of ${o.quantity}</small>` : ''}</td>
+        <td><strong>${o.productModel}</strong>${packageId ? `<br><small>${item.doNumber} of ${o.quantity}</small>` : ''}</td>
+        <td><strong>${o.id}</strong></td>
+        <td>${packageId ? `<strong>${item.doNumber}</strong>` : 'Legacy delivery'}</td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
@@ -1831,8 +1923,11 @@ async function handleSaveDeliveryWithGst(e) {
 
   if (directDeliveryEntry) {
     if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
+    const sequence = order.deliveryPackages.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0) + 1;
     const packageEntry = {
       id: packageId,
+      sequence,
+      doNumber: `DO${sequence}`,
       delivery,
       gstDetails,
       status: order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
@@ -2073,7 +2168,7 @@ function renderTodayDeliveryTable() {
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong>${o.packageId ? `<br><small>Package ${o.packageNumber} of ${o.quantity}</small>` : ''}</td>
+        <td><strong>${o.productModel}</strong>${o.packageId ? `<br><small>${o.doNumber} of ${o.quantity}</small>` : ''}</td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
@@ -2177,10 +2272,10 @@ function triggerBlobDownload(content, filename, contentType) {
 }
 
 function exportFilteredDeliveriesToExcel() {
-  let csv = "Platform,Product Model,Order ID,Package,Recipient Name,Phone,Tracking,OTP,Pincode,Status\n";
+  let csv = "Platform,Product Model,Order ID,Delivery No,Recipient Name,Phone,Tracking,OTP,Pincode,Status\n";
   getFilteredDeliveries().forEach(entry => {
     const { order: o, delivery: d } = entry;
-    csv += `"${d.platform}","${o.productModel}","${o.id}","${entry.packageNumber || ''}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${entry.status}"\n`;
+    csv += `"${d.platform}","${o.productModel}","${o.id}","${entry.doNumber || ''}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${entry.status}"\n`;
   });
   triggerBlobDownload(csv, 'All_Deliveries_Registry.csv', 'text/csv;charset=utf-8;');
 }
@@ -2192,20 +2287,22 @@ function getFilteredDeliveries() {
   return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    packageNumber: entry.packageEntry ? index + 1 : 0
+    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 0,
+    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : ''
   }))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== date) return false;
     if (platform !== 'ALL' && delivery.platform !== platform) return false;
     if (!search) return true;
-    return [delivery.pincode, delivery.tracking, delivery.recipientName, entry.order.productModel]
+    return [entry.doNumber, entry.order.id, delivery.pincode, delivery.tracking, delivery.recipientName, entry.order.productModel]
       .some(value => String(value || '').toLowerCase().includes(search));
   }).map(entry => ({
     ...entry.order,
     delivery: entry.delivery,
     status: entry.status || entry.order.status,
     packageId: entry.id,
-    packageNumber: entry.packageNumber
+    packageNumber: entry.packageNumber,
+    doNumber: entry.doNumber
   }));
 }
 
@@ -2215,10 +2312,10 @@ function exportTodayDeliveriesToExcel() {
     alert('No active delivery dispatches found for today.');
     return;
   }
-  let csv = "Platform,Model,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order ID,Package,Card Last 4\n";
+  let csv = "Platform,Model,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order ID,Delivery No,Card Last 4\n";
   todayList.forEach(o => {
     const d = o.delivery;
-    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.id}","${o.packageNumber || ''}","${o.cardLast4}"\n`;
+    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.id}","${o.doNumber || ''}","${o.cardLast4}"\n`;
   });
   triggerBlobDownload(csv, `Deliveries_Today_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
@@ -2230,7 +2327,8 @@ function getTodayModalDeliveries() {
   return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    packageNumber: entry.packageEntry ? index + 1 : 0
+    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 0,
+    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : ''
   }))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== todayIsoDate()) return false;
@@ -2243,7 +2341,8 @@ function getTodayModalDeliveries() {
     delivery: entry.delivery,
     status: entry.status || entry.order.status,
     packageId: entry.id,
-    packageNumber: entry.packageNumber
+    packageNumber: entry.packageNumber,
+    doNumber: entry.doNumber
   }));
 }
 

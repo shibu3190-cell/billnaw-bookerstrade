@@ -4,7 +4,8 @@
   "description": "Production POS Backend for Firebase & Google Sheets Sync",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.5",

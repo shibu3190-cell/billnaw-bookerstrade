@@ -184,7 +184,7 @@
       <section id="tab-delivery" class="view-content">
         <div class="filter-bar">
           <div class="filter-group">
-            <input type="text" id="delivery-search" class="input-search" placeholder="Search pin, tracking, recipient..." oninput="debouncedRenderDeliveries()" />
+            <input type="text" id="delivery-search" class="input-search" placeholder="Search DO, order ID, pin, tracking, recipient..." oninput="debouncedRenderDeliveries()" />
             <select id="delivery-platform-filter" class="select-filter" onchange="renderDeliveryTable()">
               <option value="ALL">All Platforms</option>
               <option value="Flipkart">Flipkart</option>
@@ -210,6 +210,8 @@
                 <tr>
                   <th>Platform</th>
                   <th>Locked Model</th>
+                  <th>Parent Order ID</th>
+                  <th>Delivery No.</th>
                   <th>Recipient Name</th>
                   <th>Contact</th>
                   <th>Tracking / AWB</th>
