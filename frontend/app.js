@@ -70,6 +70,7 @@ const STORAGE_QUEUE_STORE = 'outbox';
 let storageDb = null;
 let offlineOutbox = [];
 let cloudSyncInFlight = null;
+let isFlushingOfflineQueue = false;
 let directDeliveryEntry = false;
 let directDeliveryPackageIndex = 0;
 
@@ -173,13 +174,15 @@ function updateQueueBadge() {
   const dot = document.getElementById('cloud-sync-dot');
   const label = document.getElementById('cloud-sync-label');
   if (!dot || !label) return;
+  const actorKey = currentSyncActorKey();
+  const pendingCount = offlineOutbox.filter(item => !item.actorKey || item.actorKey === actorKey).length;
 
   if (!navigator.onLine) {
     dot.className = 'sync-dot busy';
     label.textContent = 'Offline';
-  } else if (offlineOutbox.length > 0) {
+  } else if (pendingCount > 0) {
     dot.className = 'sync-dot busy';
-    label.textContent = `Sync pending (${offlineOutbox.length})`;
+    label.textContent = `Sync pending (${pendingCount})`;
   } else {
     dot.className = 'sync-dot';
     label.textContent = 'Online';
@@ -237,7 +240,7 @@ function csvOrNumber(value) {
 }
 
 async function syncCloudData(showResult = false) {
-  if (!showResult && offlineOutbox.length > 0) return;
+  if (!showResult && hasPendingSyncForCurrentUser()) return;
   if (cloudSyncInFlight && !showResult) return cloudSyncInFlight;
   if (showResult) setDataManagementStatus('Importing Google Sheet data...');
   const syncRequest = (async () => {
@@ -385,6 +388,17 @@ async function syncCloudData(showResult = false) {
   if (showResult) return syncRequest;
   cloudSyncInFlight = syncRequest.finally(() => { cloudSyncInFlight = null; });
   return cloudSyncInFlight;
+}
+
+function currentSyncActorKey() {
+  if (AppState.currentUser?.role === 'customer') return `customer:${AppState.currentUser.customerId}`;
+  if (AppState.currentUser?.role === 'admin') return `admin:${AppState.currentUser.adminId}`;
+  return '';
+}
+
+function hasPendingSyncForCurrentUser() {
+  const actorKey = currentSyncActorKey();
+  return offlineOutbox.some(item => !item.actorKey || item.actorKey === actorKey);
 }
 
 function syncFromGoogleSheets() {
@@ -552,14 +566,14 @@ async function triggerAutoCloudSync(actionType, data = {}) {
         || err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) {
         return { status: 'rejected', error: err };
       }
-      const item = { endpoint, payload, actionType };
+      const item = { endpoint, payload, actionType, actorKey: currentSyncActorKey() };
       offlineOutbox.push(item);
       await addStoredQueueItem(item);
       updateQueueBadge();
       return { status: 'queued', error: err };
     }
   } else {
-    const item = { endpoint, payload, actionType };
+    const item = { endpoint, payload, actionType, actorKey: currentSyncActorKey() };
     offlineOutbox.push(item);
     await addStoredQueueItem(item);
     updateQueueBadge();
@@ -569,23 +583,33 @@ async function triggerAutoCloudSync(actionType, data = {}) {
 
 async function flushOfflineQueue() {
   await storageReady;
-  if (offlineOutbox.length === 0 || !navigator.onLine) return;
-  const remaining = [];
-  for (const item of offlineOutbox) {
-    try {
-      const result = await dispatchToBackend(item.endpoint, item.payload);
-      if (item.actionType === 'DELIVERY_SUBMITTED') {
-        const orderId = item.payload.orderId;
-        const order = AppState.orders.find(orderItem => orderItem.id === orderId);
-        applyCloudInvoiceResult(order, { ...result, packageId: item.payload.packageEntry?.id });
+  const actorKey = currentSyncActorKey();
+  if (isFlushingOfflineQueue || offlineOutbox.length === 0 || !navigator.onLine || !AppState.sessionToken || !actorKey) return;
+  isFlushingOfflineQueue = true;
+  try {
+    const pending = [...offlineOutbox];
+    const actorQueue = pending.filter(item => !item.actorKey || item.actorKey === actorKey);
+    const completed = new Set();
+    for (const item of actorQueue) {
+      try {
+        const result = await dispatchToBackend(item.endpoint, item.payload);
+        if (item.actionType === 'DELIVERY_SUBMITTED') {
+          const orderId = item.payload.orderId;
+          const order = AppState.orders.find(orderItem => orderItem.id === orderId);
+          applyCloudInvoiceResult(order, { ...result, packageId: item.payload.packageEntry?.id });
+        }
+        completed.add(item);
+      } catch (error) {
+        console.warn('Cloud sync queue paused; remaining actions kept for retry:', error.message);
+        break;
       }
-    } catch (e) {
-      if (e.status !== 401 && e.status !== 403) remaining.push(item);
     }
+    offlineOutbox = pending.filter(item => !completed.has(item));
+    await replaceStoredQueue(offlineOutbox);
+    updateQueueBadge();
+  } finally {
+    isFlushingOfflineQueue = false;
   }
-  offlineOutbox = remaining;
-  await replaceStoredQueue(offlineOutbox);
-  updateQueueBadge();
 }
 
 window.addEventListener('online', flushOfflineQueue);
@@ -873,6 +897,8 @@ async function executeLogin(e) {
     AppState.currentUser = result.user;
     AppState.sessionToken = result.sessionToken;
     await persistSession();
+    await flushOfflineQueue();
+    if (!AppState.currentUser) return;
     await syncCloudData().catch(() => {});
     if (result.user.isMaster) {
       AppState.adminProfile = { ...AppState.adminProfile, adminId: result.user.adminId, name: result.user.name, active: true };
@@ -1081,6 +1107,22 @@ function showActiveBookings() {
   switchTab('tab-orders');
 }
 
+function packageProgressLabel(order) {
+  const packages = Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [];
+  if (packages.length === 0) return '';
+  const delivered = packages.filter(item => item.status === 'Delivered').length;
+  return `Packages ${packages.length}/${order.quantity || 1} saved${delivered ? `, ${delivered} delivered` : ''}`;
+}
+
+function openOrderDeliveryPackages(orderId) {
+  const search = document.getElementById('delivery-search');
+  const dateFilter = document.getElementById('delivery-date-filter');
+  if (search) search.value = orderId;
+  if (dateFilter) dateFilter.value = '';
+  switchTab('tab-delivery');
+  renderDeliveryTable();
+}
+
 function updateTodayBadge() {
   const count = AppState.orders.filter(o => o.isToday && (o.status === 'Out for Delivery' || o.status === 'In Process')).length;
   const badge = document.getElementById('badge-today-count');
@@ -1105,7 +1147,7 @@ function renderHomeOrders() {
       <tr>
         <td><strong>${o.id}</strong></td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
-        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span></td>
+        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span>${packageProgressLabel(o) ? `<br><small>${packageProgressLabel(o)}</small>` : ''}</td>
         <td>${o.customerName}</td>
         <td>•••• ${o.cardLast4}</td>
         <td>₹${o.amountPaid.toLocaleString()}</td>
@@ -1114,7 +1156,7 @@ function renderHomeOrders() {
         <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.gstAmount}</span>` : '-'}</td>
         <td><span class="pill pill-amber">${o.status}</span></td>
         <td>
-          ${!o.delivery?.submitted ? `<button class="btn btn-primary btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Submit Delivery</button>` : `<span class="pill pill-green">✓ Out</span>`}
+          ${o.deliveryPackages?.length ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View parcels</button>` : !o.delivery?.submitted ? `<button class="btn btn-primary btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Submit Delivery</button>` : `<span class="pill pill-green">✓ Out</span>`}
         </td>
       </tr>
     `;
@@ -1155,7 +1197,7 @@ function renderOrdersTable() {
       <tr>
         <td><strong>${o.id}</strong></td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
-        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span></td>
+        <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span>${packageProgressLabel(o) ? `<br><small>${packageProgressLabel(o)}</small>` : ''}</td>
         <td>•••• ${o.cardLast4}</td>
         <td>${o.customerName}</td>
         <td>₹${o.amountPaid.toLocaleString()}</td>
@@ -1167,8 +1209,9 @@ function renderOrdersTable() {
           <div style="display:flex; gap:6px;">
             ${isAdmin && o.status === 'Pending Approval' ? `<button class="btn btn-primary btn-sm" onclick="approveBooking('${o.id}')">Approve</button>` : ''}
             ${o.deliveryPackages?.length > 0 && o.deliveryPackages.length < o.quantity ? `<button class="btn btn-subtle btn-sm" onclick="continueDirectDeliveryEntry('${o.id}')">Continue packages</button>` : ''}
+            ${o.deliveryPackages?.length > 0 ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View parcels</button>` : ''}
             ${o.status !== 'Pending Approval' && !o.delivery?.submitted ? `<button class="btn btn-subtle btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Delivery & GST</button>` : ''}
-            ${isAdmin && o.status === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
+            ${isAdmin && o.status === 'Out for Delivery' && !o.deliveryPackages?.length ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
             ${isAdmin && o.status === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
           </div>
         </td>
@@ -1213,7 +1256,7 @@ function renderDeliveryTable() {
   const search = (document.getElementById('delivery-search')?.value || '').toLowerCase();
   const platFilter = document.getElementById('delivery-platform-filter')?.value || 'ALL';
   const isAdmin = AppState.currentUser?.role === 'admin';
-  const selectedDate = document.getElementById('delivery-date-filter')?.value || todayIsoDate();
+  const selectedDate = document.getElementById('delivery-date-filter')?.value || '';
 
   const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
@@ -1225,7 +1268,7 @@ function renderDeliveryTable() {
     const d = item.delivery;
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
     if (!d || !d.submitted) return false;
-    if ((d.deliveryDate || o.createdAt) !== selectedDate) return false;
+    if (selectedDate && (d.deliveryDate || o.createdAt) !== selectedDate) return false;
     if (platFilter !== 'ALL' && d.platform !== platFilter) return false;
     if (search) {
       return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search)
@@ -1937,7 +1980,6 @@ async function handleSaveDeliveryWithGst(e) {
     order.deliveryPackages.push(packageEntry);
     if (!order.delivery) {
       order.delivery = delivery;
-      order.gstDetails = gstDetails;
     }
     if (order.status !== 'Pending Approval') order.status = 'Out for Delivery';
     await rememberDeliveryContact(delivery);
@@ -2283,7 +2325,7 @@ function exportFilteredDeliveriesToExcel() {
 function getFilteredDeliveries() {
   const search = (document.getElementById('delivery-search')?.value || '').toLowerCase();
   const platform = document.getElementById('delivery-platform-filter')?.value || 'ALL';
-  const date = document.getElementById('delivery-date-filter')?.value || todayIsoDate();
+  const date = document.getElementById('delivery-date-filter')?.value || '';
   return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
@@ -2291,7 +2333,7 @@ function getFilteredDeliveries() {
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : ''
   }))).filter(entry => {
     const delivery = entry.delivery;
-    if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== date) return false;
+    if (!delivery?.submitted || (date && (delivery.deliveryDate || entry.order.createdAt) !== date)) return false;
     if (platform !== 'ALL' && delivery.platform !== platform) return false;
     if (!search) return true;
     return [entry.doNumber, entry.order.id, delivery.pincode, delivery.tracking, delivery.recipientName, entry.order.productModel]
@@ -2467,5 +2509,6 @@ appStateReady.then(async () => {
   AppState.currentUser = savedSession.user;
   AppState.sessionToken = savedSession.token;
   showAuthenticatedView();
+  await flushOfflineQueue();
   await syncCloudData();
 });

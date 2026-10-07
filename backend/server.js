@@ -248,6 +248,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'active', spreadsheet: SPREADSHEET_ID, timestamp: new Date().toISOString() });
 });
 
+app.get('/api/health/firebase', authenticate, async (req, res) => {
+  const [firestore, storage] = await Promise.allSettled([
+    db.listCollections(),
+    storageBucket.getMetadata()
+  ]);
+  const result = {
+    firestore: firestore.status === 'fulfilled' ? 'connected' : `unavailable:${firestore.reason.code || firestore.reason.name}`,
+    storage: storage.status === 'fulfilled' ? 'connected' : `unavailable:${storage.reason.code || storage.reason.name}`
+  };
+  const ready = firestore.status === 'fulfilled' && storage.status === 'fulfilled';
+  res.status(ready ? 200 : 503).json({ status: ready ? 'connected' : 'degraded', services: result, timestamp: new Date().toISOString() });
+});
+
 app.get('/api/invoices/:fileId', authenticate, requireSession, async (req, res) => {
   try {
     const recordSnapshot = await db.collection('invoiceFiles').doc(req.params.fileId).get();
@@ -428,6 +441,24 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
     if (!actor || (actor.role === 'admin' && !actor.isMaster && !sameOwner(order.adminId, actor.adminId)) || (actor.role === 'customer' && String(order.customerId || '').trim() !== String(actor.customerId || '').trim())) {
       return res.status(403).json({ success: false, message: 'You can only create bookings for your own account.' });
     }
+    if (actor.role === 'customer') {
+      const customerId = String(actor.customerId || '').trim();
+      let customerRecord = null;
+      const customerSnapshot = await db.collection('customers').doc(customerId).get();
+      if (customerSnapshot.exists) customerRecord = customerSnapshot.data();
+      if (!customerRecord) {
+        const customerSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Customers!A:Z' });
+        customerRecord = sheetRowsToObjects(customerSheet.data.values || []).find(record =>
+          String(record['Customer ID'] || record.customerId || record.id || '').trim() === customerId);
+      }
+      const customerAdminId = String(customerRecord?.adminId || customerRecord?.['Admin ID'] || '').trim();
+      if (!customerAdminId || !sameOwner(customerAdminId, actor.adminId)) {
+        return res.status(403).json({ success: false, message: 'Your account ownership could not be verified. Contact your admin.' });
+      }
+      order.customerId = customerId;
+      order.customerName = customerRecord.name || customerRecord['Full Name'] || actor.name;
+      order.adminId = customerAdminId;
+    }
     if (actor.role === 'admin') {
       const selfCustomerId = `ADMIN-SELF-${actor.adminId}`;
       if (String(order.customerId || '').trim() === selfCustomerId) {
@@ -458,30 +489,11 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
         && Number(saved.amountPaid) === Number(order.amountPaid)
         && Number(saved.quantity) === Number(order.quantity);
       if (!sameRequest) return res.status(409).json({ success: false, message: 'That order ID already exists with different order data.' });
+      await upsertOrderSheetRow(order);
       return res.json({ success: true, duplicate: true });
     }
-    await tryFirestore(
-      () => db.collection('orders').doc(order.id).set(order),
-      `save order ${order.id}`
-    );
-
-    await ensureSheetTab('Orders', [
-      'Order ID', 'Platform', 'Product Model', 'Quantity', 'Customer Name', 'Customer ID',
-      'Card Last 4', 'Amount Paid', 'Payable Due', 'Advance Paid', 'Status', 'Date', 'Admin ID'
-    ]);
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Orders!A:M',
-      valueInputOption: 'USER_ENTERED',
-      resource: {
-        values: [[
-          order.id, order.platform, order.productModel, order.quantity || 1, order.customerName,
-          order.customerId, order.cardLast4, order.amountPaid, order.payableAmount,
-          order.advancePaid || 0, order.status, order.createdAt, order.adminId || 'ADM-001'
-        ]]
-      }
-    });
+    await orderRef.create(order);
+    await upsertOrderSheetRow(order);
 
     res.json({ success: true });
   } catch (err) {
@@ -495,6 +507,25 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
     res.status(status).json({ success: false, message });
   }
 });
+
+async function upsertOrderSheetRow(order) {
+  await ensureSheetTab('Orders', [
+    'Order ID', 'Platform', 'Product Model', 'Quantity', 'Customer Name', 'Customer ID',
+    'Card Last 4', 'Amount Paid', 'Payable Due', 'Advance Paid', 'Status', 'Date', 'Admin ID'
+  ]);
+  const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:A' });
+  const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === order.id);
+  const values = [[
+    order.id, order.platform, order.productModel, order.quantity || 1, order.customerName,
+    order.customerId, order.cardLast4, order.amountPaid, order.payableAmount,
+    order.advancePaid || 0, order.status, order.createdAt, order.adminId || ''
+  ]];
+  if (rowIndex > 0) {
+    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!A${rowIndex + 1}:M${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values } });
+  } else {
+    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:M', valueInputOption: 'USER_ENTERED', resource: { values } });
+  }
+}
 
 // 2. Delivery & GST Submission
 app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) => {
@@ -672,6 +703,13 @@ app.post('/api/orders/package-status', authenticate, requireSession, async (req,
     const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
     if (rowIndex > 0) {
       await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!P${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [[status]] } });
+    }
+    if (result.allDelivered) {
+      const orderRows = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:A' }).catch(() => ({ data: { values: [] } }));
+      const orderRow = (orderRows.data.values || []).findIndex(row => row[0] === orderId);
+      if (orderRow > 0) {
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!K${orderRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [['Delivered']] } });
+      }
     }
     res.json({ success: true, orderId, packageId, status, orderStatus: result.orderStatus });
   } catch (err) {

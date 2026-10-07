@@ -5,9 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "check:firebase": "node firebase-check.js",
+    "check:connections": "node firebase-check.js --upload-test",
+    "create:storage": "node firebase-check.js --create-storage"
   },
   "dependencies": {
+    "@google-cloud/storage": "7.22.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

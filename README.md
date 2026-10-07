@@ -10,7 +10,7 @@ The application no longer contains demo admin or demo booker credentials. Login 
    - `MASTER_ADMIN_USERNAME`
    - `MASTER_ADMIN_PASSWORD`
 3. Keep `backend/.env` and `backend/serviceAccountKey.json` private. They are ignored by Git.
-4. Start the backend from `backend/` with `npm start`.
+4. Start the backend from `backend/` with `npm start`, or from the repository root with `npm --prefix backend start`.
 5. Serve `frontend/` from a local web server and open the URL.
 
 ## Render deployment
@@ -68,3 +68,19 @@ Invoke-WebRequest -UseBasicParsing http://localhost:5000/api/health -Headers @{ 
 ```
 
 The Google Sheets import and write paths require valid Firebase credentials, spreadsheet access, and non-empty owner environment values.
+
+Firebase connectivity checks:
+
+```powershell
+npm --prefix backend run check:firebase
+```
+
+For full connection checks, including a temporary Firestore write/read/delete and Storage upload/download/delete probe, run:
+
+```powershell
+npm --prefix backend run check:connections
+```
+
+The temporary records/files are deleted after the checks. The authenticated `GET /api/health/firebase` endpoint reports Firestore and Storage readiness. A missing Storage bucket does not prevent Firestore order sync, but invoice uploads require Firebase Storage to be enabled and `FIREBASE_STORAGE_BUCKET` to name the exact bucket created for the project. Choose the Storage region in Firebase Console before creating the bucket; the region cannot be changed afterward.
+
+The project owner may create the default Storage bucket in the selected `FIREBASE_STORAGE_REGION` with `npm --prefix backend run create:storage`. The default region is `ASIA-SOUTH1`; this operation may require a Firebase Blaze plan and can incur Cloud Storage charges.
