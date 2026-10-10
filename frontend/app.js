@@ -328,9 +328,10 @@ async function syncCloudData(showResult = false) {
   if (!showResult && hasPendingSyncForCurrentUser()) return;
   if (cloudSyncInFlight && !showResult) return cloudSyncInFlight;
   if (showResult) setDataManagementStatus('Importing Google Sheet data...');
+  const exportEndpoint = (showResult ? '/admin/sheets/data' : '/admin/data/export') + '?page=1&pageSize=50';
   const syncRequest = (async () => {
     try {
-    const result = await fetchFromBackend(showResult ? '/admin/sheets/data' : '/admin/data/export');
+    const result = await fetchFromBackend(exportEndpoint);
     const data = result.data || {};
     const admins = data.admins || [];
     const customers = data.customers || [];

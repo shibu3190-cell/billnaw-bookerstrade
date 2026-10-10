@@ -1113,7 +1113,7 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
   try {
     const actor = getSession(req).user;
     const page = normalizePageNumber(req.query.page, 1);
-    const pageSize = normalizePageSize(req.query.pageSize, 100, 250);
+    const pageSize = normalizePageSize(req.query.pageSize, 50, 200);
     const tabs = ['Admins', 'Customers', 'Products', 'Orders'];
     const response = {
       pagination: {
@@ -1187,7 +1187,7 @@ app.get('/api/admin/data/export', authenticate, requireSession, async (req, res)
   try {
     const actor = getSession(req).user;
     const page = normalizePageNumber(req.query.page, 1);
-    const pageSize = normalizePageSize(req.query.pageSize, 100, 250);
+    const pageSize = normalizePageSize(req.query.pageSize, 50, 200);
     const [admins, customers, products, orders] = await Promise.all([
       db.collection('admins').get(),
       db.collection('customers').get(),
