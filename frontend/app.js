@@ -1677,6 +1677,19 @@ function orderDeliveryEntries(order) {
   }] : [];
 }
 
+function dedupeDeliveryRows(entries) {
+  const seen = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const order = entry?.order;
+    const deliveryDate = String(entry?.delivery?.deliveryDate || entry?.delivery?.submittedAt || order?.createdAt || todayIsoDate()).slice(0, 10);
+    const customerKey = String(order?.customerId || '').trim() || 'shared';
+    const doNumber = String(entry?.doNumber || 'DO1').trim();
+    const packageKey = `${deliveryDate}|${customerKey}|${order?.id || 'legacy'}|${doNumber}|${entry?.id || entry?.packageId || 'legacy'}`;
+    if (!seen.has(packageKey)) seen.set(packageKey, entry);
+  }
+  return [...seen.values()];
+}
+
 function renderDeliveryTable() {
   const tbody = document.getElementById('table-delivery-list');
   if (!tbody) return;
@@ -1687,12 +1700,12 @@ function renderDeliveryTable() {
   const isAdmin = AppState.currentUser?.role === 'admin';
   const selectedDate = document.getElementById('delivery-date-filter')?.value || '';
 
-  const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+  const deliveries = dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
     sequence: entry.sequence || (entry.packageEntry ? index + 1 : 1),
     doNumber: entry.doNumber || (entry.packageEntry ? `DO${entry.sequence || index + 1}` : 'DO1')
-  }))).filter(item => {
+  })))).filter(item => {
     const o = item.order;
     const d = item.delivery;
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
@@ -3096,12 +3109,12 @@ function getFilteredDeliveries() {
   const search = (document.getElementById('delivery-search')?.value || '').toLowerCase();
   const platform = document.getElementById('delivery-platform-filter')?.value || 'ALL';
   const date = document.getElementById('delivery-date-filter')?.value || '';
-  return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+  return dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
     packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 1,
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
-  }))).filter(entry => {
+  })))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (date && (delivery.deliveryDate || entry.order.createdAt) !== date)) return false;
     if (platform !== 'ALL' && delivery.platform !== platform) return false;
@@ -3136,12 +3149,12 @@ function getTodayModalDeliveries() {
   const fPin = (document.getElementById('today-filter-pin')?.value || '').trim().toLowerCase();
   const fName = (document.getElementById('today-filter-name')?.value || '').toLowerCase().trim();
   const fProd = (document.getElementById('today-filter-product')?.value || '').toLowerCase().trim();
-  return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+  return dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
     packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 1,
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
-  }))).filter(entry => {
+  })))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== todayIsoDate()) return false;
     if (fPin && !String(delivery.pincode || '').toLowerCase().includes(fPin)) return false;
