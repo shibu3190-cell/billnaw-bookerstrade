@@ -136,6 +136,26 @@ function sameAdminId(left, right) {
   return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
 }
 
+function normalizeProductName(productName) {
+  return String(productName || '').trim().toLowerCase();
+}
+
+function refreshProductLookupIndex() {
+  const byId = new Map();
+  const byName = new Map();
+  for (const product of AppState.products || []) {
+    if (!product || !product.name) continue;
+    const id = String(product.id || '').trim();
+    if (id) byId.set(id.toLowerCase(), product);
+    const key = normalizeProductName(product.name);
+    if (!key) continue;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(product);
+  }
+  AppState.productIndexById = byId;
+  AppState.productIndexByName = byName;
+}
+
 function openStorageDb() {
   return new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) {
@@ -465,6 +485,7 @@ async function syncCloudData(showResult = false) {
         adminId: String(product['Admin ID'] || product.adminId || '').trim(),
         active: product.Active === undefined ? product.active !== false : !['false', 'revoked', 'inactive'].includes(String(product.Active).trim().toLowerCase())
       })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || sameAdminId(product.adminId, AppState.currentUser?.adminId)));
+      refreshProductLookupIndex();
     }
     if (AppState.currentUser) {
       const previousPackagesByOrder = new Map(AppState.orders.map(order => [order.id, order.deliveryPackages || []]));
@@ -666,9 +687,15 @@ function resolveMappedCatalogProductName(productName) {
     ? AppState.currentUser.adminId
     : AppState.currentUser?.adminId || AppState.adminProfile?.adminId || '';
 
-  const existingProduct = AppState.products.find(product => {
+  const candidates = AppState.productIndexByName?.get(normalizeProductName(normalized)) || [];
+  const existingProduct = candidates.find(product => {
     if (!product || !product.name) return false;
-    const sameName = product.name.trim().toLowerCase() === normalized.toLowerCase();
+    if (AppState.currentUser?.isMaster) return true;
+    if (!currentAdminId) return true;
+    return sameAdminId(product.adminId, currentAdminId);
+  }) || AppState.products.find(product => {
+    if (!product || !product.name) return false;
+    const sameName = normalizeProductName(product.name) === normalizeProductName(normalized);
     if (!sameName) return false;
     if (AppState.currentUser?.isMaster) return true;
     if (!currentAdminId) return true;
@@ -676,7 +703,7 @@ function resolveMappedCatalogProductName(productName) {
   });
 
   if (!existingProduct) return { matched: false, productId: '', productModel: normalized };
-  return { matched: true, productId: existingProduct.id, productModel: existingProduct.name };
+  return { matched: true, productId: String(existingProduct.id), productModel: existingProduct.name };
 }
 
 async function triggerAutoCloudSync(actionType, data = {}) {
@@ -833,6 +860,8 @@ const AppState = {
   admins: [],
   currentUser: null,
   activeAdminScope: null,
+  productIndexById: new Map(),
+  productIndexByName: new Map(),
   products: [
     { id: 'p1', name: 'iPhone 16 128GB Black', targetPrice: 74900, commission: 1500 },
     { id: 'p2', name: 'REDMI Note 15 SE 5G', targetPrice: 16999, commission: 800 },
@@ -849,6 +878,7 @@ const AppState = {
     customers: { page: 1, pageSize: 20 }
   }
 };
+refreshProductLookupIndex();
 
 let cloudSyncTimer = null;
 
@@ -2243,19 +2273,24 @@ function continueDirectDeliveryEntry(orderId) {
 function handleCreateBooking(e) {
   e.preventDefault();
   const productSelect = document.getElementById('modal-order-product');
-  const pid = productSelect.value;
-  const prod = AppState.products.find(p => p.id === pid);
-  if (pid === 'Other') {
-    const customName = document.getElementById('modal-order-product-other').value.trim();
-    const mapped = resolveMappedCatalogProductName(customName);
-    if (mapped.matched) {
+  const customInput = document.getElementById('modal-order-product-other');
+  const requestedProductName = productSelect.value === 'Other' ? (customInput?.value || '').trim() : '';
+  const mapped = requestedProductName ? resolveMappedCatalogProductName(requestedProductName) : null;
+  const pid = mapped?.matched ? mapped.productId : productSelect.value;
+  const prod = AppState.productIndexById.get(String(pid || '').toLowerCase()) || AppState.products.find(p => p.id === pid);
+
+  if (productSelect.value === 'Other' && requestedProductName) {
+    if (mapped?.matched) {
       productSelect.value = mapped.productId;
-      document.getElementById('modal-order-paid').value = AppState.products.find(item => item.id === mapped.productId)?.targetPrice || '';
-      alert('Mapped the custom product to the existing catalog entry.');
-      return handleCreateBooking(e);
+      customInput.value = mapped.productModel;
+      document.getElementById('modal-order-paid').value = (AppState.productIndexById.get(String(mapped.productId || '').toLowerCase()) || AppState.products.find(item => item.id === mapped.productId))?.targetPrice || '';
+    } else {
+      alert('Select the mapped catalog product instead of submitting its name as a custom product.');
+      return;
     }
   }
-  if (pid !== 'Other' && (!prod || !getAvailableProductsForCurrentUser().some(product => product.id === pid))) {
+
+  if (productSelect.value !== 'Other' && (!prod || !getAvailableProductsForCurrentUser().some(product => product.id === pid))) {
     alert('Select an active product assigned to your Admin account.');
     return;
   }
@@ -2284,9 +2319,7 @@ function handleCreateBooking(e) {
     customerId: cust.id,
     adminId: AppState.currentUser.adminId || AppState.adminProfile.adminId,
     customerName: cust.name,
-    productModel: document.getElementById('modal-order-product').value === 'Other'
-      ? document.getElementById('modal-order-product-other').value.trim()
-      : (prod ? prod.name : 'Custom Device'),
+    productModel: prod ? prod.name : (document.getElementById('modal-order-product-other').value.trim() || 'Custom Device'),
     cardLast4: document.getElementById('modal-order-card').value.trim(),
     amountPaid: paid,
     quantity,
