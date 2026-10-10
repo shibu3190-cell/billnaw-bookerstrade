@@ -682,6 +682,15 @@ function applyCloudInvoiceResult(order, result) {
   persistLocalState();
 }
 
+function ensureOrderSettlementMeta(order) {
+  if (!order || typeof order !== 'object') return order;
+  const status = String(order.status || '').trim();
+  if (status.toLowerCase() === 'settled' && !order.settledAt) {
+    order.settledAt = todayIsoDate();
+  }
+  return order;
+}
+
 function resolveMappedCatalogProductName(productName) {
   const normalized = String(productName || '').trim();
   if (!normalized) return { matched: false, productId: '', productModel: '' };
@@ -711,15 +720,16 @@ function resolveMappedCatalogProductName(productName) {
 
 function normalizeOrderForCloudSync(order) {
   if (!order || typeof order !== 'object') return order;
-  const productModel = String(order.productModel || '').trim();
-  if (!productModel) return order;
+  const normalized = { ...order };
+  const productModel = String(normalized.productModel || '').trim();
+  if (!productModel) return ensureOrderSettlementMeta(normalized);
   const mapped = resolveMappedCatalogProductName(productModel);
-  if (!mapped.matched) return order;
-  return {
-    ...order,
-    productId: mapped.productId || order.productId || '',
+  if (!mapped.matched) return ensureOrderSettlementMeta(normalized);
+  return ensureOrderSettlementMeta({
+    ...normalized,
+    productId: mapped.productId || normalized.productId || '',
     productModel: mapped.productModel
-  };
+  });
 }
 
 function normalizeQueuedSyncItem(item) {
@@ -1274,7 +1284,8 @@ function showAuthenticatedView() {
     document.getElementById('cfg-admin-name').value = AppState.currentUser.name || '';
     document.getElementById('cfg-admin-user').value = AppState.currentUser.username || '';
     document.getElementById('master-security-card').querySelector('.form-label').textContent = 'Admin ID';
-    document.getElementById('add-admin-button').style.display = AppState.currentUser.isMaster ? '' : 'none';
+    const addAdminButton = document.getElementById('add-admin-button');
+    if (addAdminButton) addAdminButton.style.display = AppState.currentUser.isMaster ? '' : 'none';
     document.getElementById('admin-access-card').style.display = AppState.currentUser.isMaster ? '' : 'none';
   }
   if (AppState.currentUser.role === 'admin' && AppState.currentUser.isMaster) {
@@ -2074,11 +2085,31 @@ async function hydrateInvoicePreviews(entries) {
 function renderProductListSettings() {
   const container = document.getElementById('settings-product-list');
   if (!container) return;
-  container.innerHTML = '';
+  const searchInput = document.getElementById('product-catalog-search');
+  const searchTerm = (searchInput?.value || '').trim().toLowerCase();
   const scopeId = getEffectiveAdminScopeId();
-  const products = AppState.currentUser?.isMaster
+  const products = (AppState.currentUser?.isMaster
     ? AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, scopeId || AppState.currentUser.adminId))
-    : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId));
+    : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId)))
+    .filter(product => {
+      if (!searchTerm) return true;
+      const haystack = [
+        product.name || '',
+        product.id || '',
+        product.adminId || '',
+        product.platform || '',
+        String(product.targetPrice || ''),
+        String(product.commission || '')
+      ].join(' ').toLowerCase();
+      return haystack.includes(searchTerm);
+    });
+
+  container.innerHTML = '';
+  if (products.length === 0) {
+    container.innerHTML = '<div style="padding:10px; border:1px dashed var(--border-subtle); color:var(--text-muted); border-radius:6px;">No matching products found for this catalog view.</div>';
+    return;
+  }
+
   products.forEach(p => {
     const canManage = AppState.currentUser?.isMaster || sameAdminId(p.adminId, AppState.currentUser?.adminId);
     container.innerHTML += `
@@ -2710,12 +2741,14 @@ function handleExecuteSettlement(e) {
 
     const fullySettled = (order.advancePaid || 0) + order.settledAmount >= order.payableAmount;
     order.status = fullySettled ? 'Settled' : 'Delivered';
-    if (fullySettled) order.settledAt = new Date().toISOString().slice(0, 10);
+    if (fullySettled) {
+      order.settledAt = order.settledAt || todayIsoDate();
+    }
 
     closeModal('modal-settlement');
     renderAllViews();
     triggerAutoCloudSync('SETTLEMENT_RECORDED', { orderId, customerId: custId, customerName: cust.name, amount, notes });
-    triggerAutoCloudSync('STATUS_CHANGED', { order });
+    triggerAutoCloudSync('STATUS_CHANGED', { order: ensureOrderSettlementMeta(order) });
   }
 }
 

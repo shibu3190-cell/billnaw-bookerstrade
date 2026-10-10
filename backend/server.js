@@ -977,7 +977,11 @@ app.post('/api/orders/status', authenticate, requireSession, async (req, res) =>
     if (!orderSnapshot.exists) return res.status(404).json({ success: false, message: 'Booking not found.' });
     if (!canAccessOrder(actor, orderSnapshot.data())) return res.status(403).json({ success: false, message: 'You can only update bookings owned by your account.' });
     const updateObj = { status };
-    if (settledAt) updateObj.settledAt = settledAt;
+    if (status === 'Settled' && (!settledAt || String(settledAt).trim() === '')) {
+      updateObj.settledAt = new Date().toISOString().slice(0, 10);
+    } else if (settledAt) {
+      updateObj.settledAt = settledAt;
+    }
     await orderRef.update(updateObj);
 
     const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:A' });

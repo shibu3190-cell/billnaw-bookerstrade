@@ -356,20 +356,11 @@
             </form>
           </div>
 
-          <div class="kpi-card">
-            <h3>☁️ Data Management</h3>
-            <p>Import Admins, Bookers, Products, and Orders from the configured Google Sheet.</p>
-            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
-              <button class="btn btn-primary btn-sm" onclick="syncFromGoogleSheets()">↻ Import Google Sheet</button>
-              <button class="btn btn-subtle btn-sm" onclick="downloadAllAppData()">↓ Download All Data</button>
-              <button class="btn btn-danger btn-sm" onclick="resetLocalAppData()">Reset Local Data</button>
-            </div>
-            <p id="data-management-status" style="margin-top:10px; color:var(--text-muted);">IndexedDB is the local POS store.</p>
-            <button id="add-admin-button" class="btn btn-primary btn-sm" onclick="openCreateAdminModal()">+ Add Admin Account</button>
-          </div>
-
           <div class="kpi-card" id="admin-access-card">
-            <h3>Admin Access Control</h3>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+              <h3>Admin Access Control</h3>
+              <button id="add-admin-button" class="btn btn-primary btn-sm" onclick="openCreateAdminModal()">+ Add Admin Account</button>
+            </div>
             <p>Only the Master Admin can revoke or activate subordinate admins.</p>
             <div id="admin-access-list"></div>
           </div>
@@ -379,10 +370,13 @@
               <h3>📱 Product Catalog & Commissions</h3>
               <button class="btn btn-primary btn-sm" onclick="openNewProductModal()">+ Add Model</button>
             </div>
-            <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
               <button class="btn btn-subtle btn-sm" onclick="exportProductCatalogCSV()">Download Catalog</button>
               <button class="btn btn-subtle btn-sm" onclick="document.getElementById('product-catalog-upload').click()">Upload Catalog</button>
               <input id="product-catalog-upload" type="file" accept=".csv,text/csv" style="display:none" onchange="handleProductCatalogUpload(this)" />
+            </div>
+            <div style="margin-bottom:8px;">
+              <input id="product-catalog-search" type="text" class="input-search" placeholder="Search model, ID, admin, price..." oninput="renderProductListSettings()" />
             </div>
             <div id="settings-product-list" style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto;"></div>
           </div>
