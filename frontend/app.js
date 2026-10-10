@@ -329,7 +329,7 @@ function resetLoadingOverlay() {
 window.addEventListener('pageshow', resetLoadingOverlay);
 
 function setAppLoadingState(message = 'Saving...', visible = true, compact = false) {
-  if (APP_GLOBAL_LOADING_DISABLED) {
+  if (typeof APP_GLOBAL_LOADING_DISABLED !== 'undefined' && APP_GLOBAL_LOADING_DISABLED) {
     resetLoadingOverlay();
     return;
   }
@@ -359,6 +359,14 @@ function setAppLoadingState(message = 'Saving...', visible = true, compact = fal
   text.textContent = message || 'Loading...';
   overlay.hidden = false;
   overlay.setAttribute('aria-busy', 'true');
+}
+
+function setInlineLoadingState(label = 'Saving...', visible = true) {
+  const inlineLoader = document.getElementById('app-inline-loading');
+  const inlineText = inlineLoader?.querySelector('.app-inline-text');
+  if (!inlineLoader || !inlineText) return;
+  inlineText.textContent = label || 'Saving...';
+  inlineLoader.hidden = !visible;
 }
 
 function setButtonLoadingState(button, label, isLoading) {
@@ -1891,6 +1899,14 @@ function toggleDeliveryOtherPlatform() {
   input.required = other;
 }
 
+function getNextDirectDeliverySequence(order) {
+  const packages = Array.isArray(order?.deliveryPackages) ? order.deliveryPackages : [];
+  const used = new Set(packages.map(packageEntry => Number(packageEntry.sequence) || 0).filter(Boolean));
+  let next = 1;
+  while (used.has(next)) next += 1;
+  return next;
+}
+
 function updateDeliveryPackageProgress() {
   const quantity = Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1);
   const progress = document.getElementById('delivery-package-progress');
@@ -2147,7 +2163,7 @@ async function handleSaveDeliveryWithGst(e) {
   const packageLabel = directDeliveryEntry && Number(document.getElementById('direct-delivery-quantity')?.value || 1) > 1
     ? `Saving package ${Math.min(directDeliveryPackageIndex + 1, Number(document.getElementById('direct-delivery-quantity')?.value || 1))}...`
     : (directDeliveryEntry ? 'Saving delivery package...' : 'Saving delivery...');
-  setAppLoadingState(packageLabel, true);
+  setInlineLoadingState(packageLabel, true);
   setButtonLoadingState(submitButton, packageLabel, true);
   try {
     let order = AppState.orders.find(o => o.id === orderId);
@@ -2251,7 +2267,7 @@ async function handleSaveDeliveryWithGst(e) {
 
   if (directDeliveryEntry) {
     if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
-    const sequence = order.deliveryPackages.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0) + 1;
+    const sequence = getNextDirectDeliverySequence(order);
     const packageEntry = {
       id: packageId,
       sequence,
@@ -2308,6 +2324,7 @@ async function handleSaveDeliveryWithGst(e) {
     closeModal('modal-delivery-submission');
     renderAllViews();
   } finally {
+    setInlineLoadingState('Saving...', false);
     setAppLoadingState(directDeliveryEntry ? 'Saving delivery package...' : 'Saving delivery...', false);
     setButtonLoadingState(submitButton, packageLabel, false);
   }
