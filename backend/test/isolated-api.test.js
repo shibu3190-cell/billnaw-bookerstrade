@@ -128,6 +128,11 @@ test('isolated account and product API workflows use fake persistence only', asy
     status: 409
   });
   await call('/orders/create', {
+    body: { order: { id: 'test-order-custom-name-matched', customerId: credentials.booker.id, adminId: credentials.admin.id, productModel: 'Test Phone Pro', amountPaid: 1000, quantity: 1 } },
+    sessionToken: adminSession,
+    status: 400
+  });
+  await call('/orders/create', {
     body: { order: { id: 'test-order-active-product', productId: 'test-product-01', customerId: credentials.booker.id, adminId: credentials.admin.id, productModel: 'Test Phone Pro', amountPaid: 1000, quantity: 1 } },
     sessionToken: adminSession
   });

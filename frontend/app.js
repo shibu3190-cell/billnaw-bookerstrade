@@ -630,6 +630,27 @@ function applyCloudInvoiceResult(order, result) {
   persistLocalState();
 }
 
+function resolveMappedCatalogProductName(productName) {
+  const normalized = String(productName || '').trim();
+  if (!normalized) return { matched: false, productId: '', productModel: '' };
+
+  const currentAdminId = AppState.currentUser?.role === 'customer'
+    ? AppState.currentUser.adminId
+    : AppState.currentUser?.adminId || AppState.adminProfile?.adminId || '';
+
+  const existingProduct = AppState.products.find(product => {
+    if (!product || !product.name) return false;
+    const sameName = product.name.trim().toLowerCase() === normalized.toLowerCase();
+    if (!sameName) return false;
+    if (AppState.currentUser?.isMaster) return true;
+    if (!currentAdminId) return true;
+    return sameAdminId(product.adminId, currentAdminId);
+  });
+
+  if (!existingProduct) return { matched: false, productId: '', productModel: normalized };
+  return { matched: true, productId: existingProduct.id, productModel: existingProduct.name };
+}
+
 async function triggerAutoCloudSync(actionType, data = {}) {
   await storageReady;
   persistLocalState();
@@ -710,11 +731,20 @@ async function triggerAutoCloudSync(actionType, data = {}) {
       updateQueueBadge();
       return { status: 'synced', result };
     } catch (err) {
-      console.warn(`[Network/Auth Issue] Queuing ${actionType}:`, err.message);
-      if (err.status === 401 || err.status === 403
-        || err.message.includes('active login session') || err.message.includes('Unauthorized API Token')) {
+      const isValidationIssue = err.status === 400 || err.status === 404 || err.status === 409 || err.status === 422;
+      const isAuthIssue = err.status === 401 || err.status === 403
+        || err.message.includes('active login session') || err.message.includes('Unauthorized API Token');
+      const isRetryableIssue = !err.status || err.status >= 500 || err.status === 408 || err.status === 429;
+
+      if (isAuthIssue || isValidationIssue) {
+        console.warn(`[Request rejected] ${actionType}:`, err.message);
         return { status: 'rejected', error: err };
       }
+      if (!isRetryableIssue) {
+        console.warn(`[Request rejected] ${actionType}:`, err.message);
+        return { status: 'rejected', error: err };
+      }
+      console.warn(`[Network/Auth Issue] Queuing ${actionType}:`, err.message);
       const item = { endpoint, payload, actionType, actorKey: currentSyncActorKey() };
       offlineOutbox.push(item);
       await addStoredQueueItem(item);
@@ -2175,8 +2205,19 @@ function continueDirectDeliveryEntry(orderId) {
 
 function handleCreateBooking(e) {
   e.preventDefault();
-  const pid = document.getElementById('modal-order-product').value;
+  const productSelect = document.getElementById('modal-order-product');
+  const pid = productSelect.value;
   const prod = AppState.products.find(p => p.id === pid);
+  if (pid === 'Other') {
+    const customName = document.getElementById('modal-order-product-other').value.trim();
+    const mapped = resolveMappedCatalogProductName(customName);
+    if (mapped.matched) {
+      productSelect.value = mapped.productId;
+      document.getElementById('modal-order-paid').value = AppState.products.find(item => item.id === mapped.productId)?.targetPrice || '';
+      alert('Mapped the custom product to the existing catalog entry.');
+      return handleCreateBooking(e);
+    }
+  }
   if (pid !== 'Other' && (!prod || !getAvailableProductsForCurrentUser().some(product => product.id === pid))) {
     alert('Select an active product assigned to your Admin account.');
     return;
@@ -2309,10 +2350,18 @@ async function handleSaveDeliveryWithGst(e) {
     let order = AppState.orders.find(o => o.id === orderId);
   if (directDeliveryEntry && !order) {
     const selectedProductId = document.getElementById('direct-delivery-product').value;
-    const product = AppState.products.find(item => item.id === selectedProductId);
-    const productModel = selectedProductId === 'Other'
+    let product = AppState.products.find(item => item.id === selectedProductId);
+    let productModel = selectedProductId === 'Other'
       ? document.getElementById('direct-delivery-custom-model').value.trim()
       : product?.name;
+    if (selectedProductId === 'Other') {
+      const mapped = resolveMappedCatalogProductName(productModel);
+      if (mapped.matched) {
+        document.getElementById('direct-delivery-product').value = mapped.productId;
+        product = AppState.products.find(item => item.id === mapped.productId) || product;
+        productModel = mapped.productModel;
+      }
+    }
     const amountPaid = Number(document.getElementById('direct-delivery-card-amount').value);
     const quantity = Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1);
     if (!productModel || !Number.isFinite(amountPaid) || amountPaid < 0) return alert('Choose a product and enter a valid card amount.');
