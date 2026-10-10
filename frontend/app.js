@@ -67,12 +67,22 @@ const STORAGE_DB_NAME = 'devicetrade-local';
 const STORAGE_DB_VERSION = 2;
 const STORAGE_STATE_STORE = 'state';
 const STORAGE_QUEUE_STORE = 'outbox';
+const REQUEST_TIMEOUT_MS = 25000;
 let storageDb = null;
 let offlineOutbox = [];
 let cloudSyncInFlight = null;
 let isFlushingOfflineQueue = false;
 let directDeliveryEntry = false;
 let directDeliveryPackageIndex = 0;
+
+function withRequestTimeout(timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    controller,
+    cleanup: () => clearTimeout(timeoutId)
+  };
+}
 
 function sameAdminId(left, right) {
   return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
@@ -169,6 +179,7 @@ async function initializeStorage() {
 }
 
 const storageReady = initializeStorage();
+let appLoadingRequestCount = 0;
 
 function updateQueueBadge() {
   const dot = document.getElementById('cloud-sync-dot');
@@ -192,6 +203,7 @@ function updateQueueBadge() {
 async function dispatchToBackend(endpoint, payload) {
   // Always include secretToken in both header and body payload
   const fullPayload = { ...payload, secretToken: API_CONFIG.secretToken };
+  const timeout = withRequestTimeout();
   setAppLoadingState(endpoint.includes('/orders/') || endpoint.includes('/customers/') || endpoint.includes('/admin/') ? 'Syncing data...' : 'Saving...', true);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
@@ -201,7 +213,8 @@ async function dispatchToBackend(endpoint, payload) {
         'x-api-key': API_CONFIG.secretToken,
         ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
       },
-      body: JSON.stringify(fullPayload)
+      body: JSON.stringify(fullPayload),
+      signal: timeout.controller.signal
     });
 
     if (!res.ok) {
@@ -214,24 +227,42 @@ async function dispatchToBackend(endpoint, payload) {
       throw error;
     }
     return await res.json();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('The request timed out. Please check your connection and try again.');
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
   } finally {
+    timeout.cleanup();
     setAppLoadingState('Saving...', false);
   }
 }
 
 async function fetchFromBackend(endpoint) {
+  const timeout = withRequestTimeout();
   setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
       headers: {
         'x-api-key': API_CONFIG.secretToken,
         ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
-      }
+      },
+      signal: timeout.controller.signal
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.message || `HTTP ${res.status}`);
     return result;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('The request timed out. Please check your connection and try again.');
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
   } finally {
+    timeout.cleanup();
     setAppLoadingState('Loading data...', false);
   }
 }
@@ -240,9 +271,26 @@ function setAppLoadingState(message = 'Saving...', visible = true) {
   const overlay = document.getElementById('app-loading-overlay');
   const text = overlay?.querySelector('.app-loading-text');
   if (!overlay || !text) return;
+
+  if (visible) {
+    appLoadingRequestCount = Math.max(appLoadingRequestCount + 1, 1);
+    text.textContent = message;
+    overlay.hidden = false;
+    overlay.setAttribute('aria-busy', 'true');
+    return;
+  }
+
+  appLoadingRequestCount = Math.max(appLoadingRequestCount - 1, 0);
+  if (appLoadingRequestCount === 0) {
+    text.textContent = message;
+    overlay.hidden = true;
+    overlay.setAttribute('aria-busy', 'false');
+    return;
+  }
+
   text.textContent = message;
-  overlay.hidden = !visible;
-  overlay.setAttribute('aria-busy', String(visible));
+  overlay.hidden = false;
+  overlay.setAttribute('aria-busy', 'true');
 }
 
 function setButtonLoadingState(button, label, isLoading) {
@@ -982,6 +1030,12 @@ function showAuthenticatedView() {
 }
 
 async function logoutApp() {
+  appLoadingRequestCount = 0;
+  const overlay = document.getElementById('app-loading-overlay');
+  if (overlay) {
+    overlay.hidden = true;
+    overlay.setAttribute('aria-busy', 'false');
+  }
   AppState.currentUser = null;
   AppState.sessionToken = '';
   if (cloudSyncTimer) clearInterval(cloudSyncTimer);
