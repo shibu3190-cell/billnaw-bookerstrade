@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { google } = require('googleapis');
 const { allocateDeliveryPackageIdentity } = require('./delivery-packages');
+const { paginateRecords, normalizePageNumber, normalizePageSize } = require('./data-pagination');
 
 // Absolute path to .env file so it loads regardless of execution directory
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -1111,22 +1112,44 @@ function numberOrZero(value) {
 app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res) => {
   try {
     const actor = getSession(req).user;
+    const page = normalizePageNumber(req.query.page, 1);
+    const pageSize = normalizePageSize(req.query.pageSize, 100, 250);
     const tabs = ['Admins', 'Customers', 'Products', 'Orders'];
-    const response = {};
+    const response = {
+      pagination: {
+        page,
+        pageSize,
+        totalCount: 0,
+        totalPages: 1,
+        hasPreviousPage: false,
+        hasNextPage: false
+      }
+    };
     for (const tab of tabs) {
       try {
         const result = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tab}!A:Z` });
         const records = sheetRowsToObjects(result.data.values || []);
-        response[tab.toLowerCase()] = actor.isMaster ? records : tab === 'Admins'
+        const filteredRecords = actor.isMaster ? records : tab === 'Admins'
           ? records.filter(record => ownedBy(record, actor.adminId))
           : records.filter(record => actor.role === 'customer'
             ? tab === 'Products'
               ? ownedBy(record, actor.adminId)
               : String(record['Customer ID'] || record.customerId || record.id || '').trim() === actor.customerId
             : ownedBy(record, actor.adminId));
+        const paginated = paginateRecords(filteredRecords, page, pageSize, { defaultPageSize: 100, maxPageSize: 250 });
+        response[tab.toLowerCase()] = paginated.items;
+        response.pagination[tab.toLowerCase()] = {
+          page: paginated.page,
+          pageSize: paginated.pageSize,
+          totalCount: paginated.totalCount,
+          totalPages: paginated.totalPages,
+          hasPreviousPage: paginated.hasPreviousPage,
+          hasNextPage: paginated.hasNextPage
+        };
       } catch (error) {
         if (error.code === 400 || error.code === 404) {
           response[tab.toLowerCase()] = [];
+          response.pagination[tab.toLowerCase()] = { page, pageSize, totalCount: 0, totalPages: 1, hasPreviousPage: false, hasNextPage: false };
           continue;
         }
         throw error;
@@ -1136,11 +1159,23 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
       const packageResult = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:S' });
       const visibleOrderIds = new Set((response.orders || []).map(record =>
         String(record['Order ID'] || record.orderId || record.id || '').trim()).filter(Boolean));
-      response.delivery_packages = sheetRowsToObjects(packageResult.data.values || []).filter(record =>
+      const packageRecords = sheetRowsToObjects(packageResult.data.values || []).filter(record =>
         visibleOrderIds.has(String(record['Order ID'] || record.orderId || '').trim()));
+      const packagePage = paginateRecords(packageRecords, page, pageSize, { defaultPageSize: 100, maxPageSize: 250 });
+      response.delivery_packages = packagePage.items;
+      response.pagination.delivery_packages = {
+        page: packagePage.page,
+        pageSize: packagePage.pageSize,
+        totalCount: packagePage.totalCount,
+        totalPages: packagePage.totalPages,
+        hasPreviousPage: packagePage.hasPreviousPage,
+        hasNextPage: packagePage.hasNextPage
+      };
     } catch (error) {
-      if (error.code === 400 || error.code === 404) response.delivery_packages = [];
-      else throw error;
+      if (error.code === 400 || error.code === 404) {
+        response.delivery_packages = [];
+        response.pagination.delivery_packages = { page, pageSize, totalCount: 0, totalPages: 1, hasPreviousPage: false, hasNextPage: false };
+      } else throw error;
     }
     res.json({ success: true, spreadsheetId: SPREADSHEET_ID, data: response });
   } catch (err) {
@@ -1151,9 +1186,14 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
 app.get('/api/admin/data/export', authenticate, requireSession, async (req, res) => {
   try {
     const actor = getSession(req).user;
-    const [admins, customers, products, orders] = await Promise.all(
-      ['admins', 'customers', 'products', 'orders'].map(collection => db.collection(collection).get())
-    );
+    const page = normalizePageNumber(req.query.page, 1);
+    const pageSize = normalizePageSize(req.query.pageSize, 100, 250);
+    const [admins, customers, products, orders] = await Promise.all([
+      db.collection('admins').get(),
+      db.collection('customers').get(),
+      db.collection('products').get(),
+      db.collection('orders').get()
+    ]);
     const collectionData = snapshot => snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const scope = records => actor.isMaster ? records : records.filter(record => actor.role === 'customer'
       ? String(record.customerId || record.id || '').trim() === String(actor.customerId || '').trim()
@@ -1162,15 +1202,30 @@ app.get('/api/admin/data/export', authenticate, requireSession, async (req, res)
     const customerScopedProducts = actor.role === 'customer' && !actor.isMaster
       ? customerProducts.filter(record => sameOwner(record.adminId, actor.adminId))
       : customerProducts;
+    const allData = {
+      admins: actor.isMaster ? collectionData(admins) : collectionData(admins).filter(record => sameOwner(record.adminId, actor.adminId)),
+      customers: scope(collectionData(customers)),
+      products: actor.isMaster ? customerProducts : actor.role === 'customer' ? customerScopedProducts : scope(customerProducts),
+      orders: scope(collectionData(orders))
+    };
+    const pagination = {};
+    for (const [key, value] of Object.entries(allData)) {
+      const pageResult = paginateRecords(value, page, pageSize, { defaultPageSize: 100, maxPageSize: 250 });
+      allData[key] = pageResult.items;
+      pagination[key] = {
+        page: pageResult.page,
+        pageSize: pageResult.pageSize,
+        totalCount: pageResult.totalCount,
+        totalPages: pageResult.totalPages,
+        hasPreviousPage: pageResult.hasPreviousPage,
+        hasNextPage: pageResult.hasNextPage
+      };
+    }
     res.json({
       success: true,
       exportedAt: new Date().toISOString(),
-      data: {
-        admins: actor.isMaster ? collectionData(admins) : collectionData(admins).filter(record => sameOwner(record.adminId, actor.adminId)),
-        customers: scope(collectionData(customers)),
-        products: actor.isMaster ? customerProducts : actor.role === 'customer' ? customerScopedProducts : scope(customerProducts),
-        orders: scope(collectionData(orders))
-      }
+      data: allData,
+      pagination
     });
   } catch (err) {
     res.status(502).json({ success: false, message: `Cloud data export failed: ${err.message}` });
