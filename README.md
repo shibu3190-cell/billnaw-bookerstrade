@@ -24,9 +24,11 @@ Do not put real passwords in this README or in frontend files. The frontend only
 - The configured Master Admin is the owner account and has global access.
 - Only the Master Admin can create, revoke, and activate subordinate admins.
 - Each subordinate admin has an `adminId`; bookers and bookings created by that admin carry the same `adminId`.
+- Products are assigned to an admin and inherited by that admin's bookers. Only active products in the owning admin's catalog can be selected for new bookings; legacy products without an owner remain shared and read-only to subordinate admins.
 - An admin can access only their own bookers, bookings, deliveries, invoices, and profit data.
 - The Master Admin can see all admin data.
-- A revoked admin or booker cannot log in.
+- Revoking an admin or booker blocks new login and invalidates existing sessions on their next request, including after reactivation.
+- Deleting an admin or booker removes their records and associated uploaded invoice files. Deletion reports an error if required cleanup fails.
 - The Master Admin cannot be revoked from the UI or API.
 - Booker passwords are not displayed in the application.
 
@@ -37,13 +39,16 @@ Do not put real passwords in this README or in frontend files. The frontend only
 3. Use `Add Admin Account` to create an active admin.
 4. Use `Admin Access Control` to revoke or activate subordinate admins.
 5. Open `Bookers` to create booker accounts under the signed-in admin and revoke or activate them.
-6. Profit remains on the Home dashboard; there is no separate Profit navigation tab.
+6. In `Settings`, assign products to the owning admin, then deactivate products that should no longer be selectable.
+7. Profit remains on the Home dashboard; there is no separate Profit navigation tab.
 
 ## Data and sync
 
 - Firestore stores admins, bookers, orders, and invoice metadata.
 - Google Sheets sync uses the configured spreadsheet ID and service account.
-- Admin and booker Sheets rows include active state and ownership IDs.
+- Admin and booker Sheets rows include active state, ownership IDs, and session versions used to invalidate old sessions.
+- Product catalog CSV files use `Product ID,Product Name,Target Price,Commission,Admin ID,Active`; quoted commas and newlines are supported.
+- Order sheets keep `Product ID` in column N so existing ownership data in earlier columns remains in place.
 - API requests require the configured API token; privileged lifecycle operations also require a server-issued login session.
 
 ## Verification commands

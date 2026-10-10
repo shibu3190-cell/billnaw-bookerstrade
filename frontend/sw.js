@@ -1,8 +1,9 @@
-const CACHE_NAME = 'devicetrade-v2026-10-10-2';
+const CACHE_NAME = 'devicetrade-v2026-10-11-1';
 const STATIC_ASSETS = [
   './',
   './index.html',
   './style.css',
+  './csv.js',
   './app.js',
   './manifest.json'
 ];

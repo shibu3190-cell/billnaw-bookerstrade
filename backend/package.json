@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:isolated": "node isolated-server.js",
     "test": "node --test",
     "check:firebase": "node firebase-check.js",
     "check:connections": "node firebase-check.js --upload-test",

@@ -3,7 +3,7 @@
  */
 
 const APP_CACHE_VERSION = '2026-10-10-2';
-const APP_GLOBAL_LOADING_DISABLED = true;
+const APP_GLOBAL_LOADING_DISABLED = false;
 
 function forceOverlayHiddenOnStartup() {
   const overlay = document.getElementById('app-loading-overlay');
@@ -104,9 +104,11 @@ function dismissPwaPrompt() {
 }
 
 // 2. Cloud Configuration & Synchronizer
+const isolatedTestMode = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).get('isolatedTest') === '1';
 const API_CONFIG = {
-  baseUrl: "https://billnow-bookerstrade-3.onrender.com/api",
-  secretToken: "AVI_TRADE_SECURE_KEY_2026"
+  baseUrl: isolatedTestMode ? 'http://127.0.0.1:5001/api' : "https://billnow-bookerstrade-3.onrender.com/api",
+  secretToken: isolatedTestMode ? 'local-isolated-test-token' : ''
 };
 
 const STORAGE_DB_NAME = 'devicetrade-local';
@@ -228,22 +230,7 @@ const storageReady = initializeStorage();
 let appLoadingRequestCount = 0;
 
 function updateQueueBadge() {
-  const dot = document.getElementById('cloud-sync-dot');
-  const label = document.getElementById('cloud-sync-label');
-  if (!dot || !label) return;
-  const actorKey = currentSyncActorKey();
-  const pendingCount = offlineOutbox.filter(item => !item.actorKey || item.actorKey === actorKey).length;
-
-  if (!navigator.onLine) {
-    dot.className = 'sync-dot busy';
-    label.textContent = 'Offline';
-  } else if (pendingCount > 0) {
-    dot.className = 'sync-dot busy';
-    label.textContent = `Sync pending (${pendingCount})`;
-  } else {
-    dot.className = 'sync-dot';
-    label.textContent = 'Online';
-  }
+  return;
 }
 
 async function dispatchToBackend(endpoint, payload) {
@@ -361,14 +348,6 @@ function setAppLoadingState(message = 'Saving...', visible = true, compact = fal
   overlay.setAttribute('aria-busy', 'true');
 }
 
-function setInlineLoadingState(label = 'Saving...', visible = true) {
-  const inlineLoader = document.getElementById('app-inline-loading');
-  const inlineText = inlineLoader?.querySelector('.app-inline-text');
-  if (!inlineLoader || !inlineText) return;
-  inlineText.textContent = label || 'Saving...';
-  inlineLoader.hidden = !visible;
-}
-
 function setButtonLoadingState(button, label, isLoading) {
   if (!button) return;
   const originalText = button.dataset.originalText || button.textContent.trim();
@@ -419,22 +398,19 @@ async function syncCloudData(showResult = false) {
         adminId: importedAdmin['Admin ID'] || importedAdmin.adminId,
         name: importedAdmin['Admin Name'] || importedAdmin.name || '',
         username: importedAdmin.Username || importedAdmin.username || '',
-        password: importedAdmin.Password || importedAdmin.password || '',
         active: importedAdmin.Active !== 'false' && importedAdmin.active !== false
       })).filter(adminItem => adminItem.adminId && adminItem.username);
       const importedAdmin = AppState.admins[0];
       AppState.adminProfile = {
         adminId: importedAdmin['Admin ID'] || AppState.adminProfile.adminId,
         name: importedAdmin['Admin Name'] || AppState.adminProfile.name,
-        username: importedAdmin.Username || AppState.adminProfile.username,
-        password: importedAdmin.Password || AppState.adminProfile.password
+        username: importedAdmin.Username || AppState.adminProfile.username
       };
     }
     if (AppState.currentUser?.role === 'admin' || AppState.currentUser?.role === 'customer') {
       AppState.customers = customers.map(customer => ({
         id: String(customer['Customer ID'] || customer.id || '').trim(),
         username: customer['Customer ID'] || customer.username || customer.id,
-        password: customer.Password || customer.password || '',
         name: customer['Full Name'] || customer.name || '',
         mobile: customer.Mobile || customer.mobile || '',
         createdByAdmin: customer['Created By Admin'] || customer.createdByAdmin || AppState.adminProfile.name,
@@ -449,13 +425,15 @@ async function syncCloudData(showResult = false) {
         name: product['Product Name'] || product.name || '',
         targetPrice: csvOrNumber(product['Target Price'] || product.targetPrice),
         commission: csvOrNumber(product.Commission || product.commission),
-        adminId: String(product['Admin ID'] || product.adminId || '').trim()
+        adminId: String(product['Admin ID'] || product.adminId || '').trim(),
+        active: product.Active === undefined ? product.active !== false : !['false', 'revoked', 'inactive'].includes(String(product.Active).trim().toLowerCase())
       })).filter(product => product.name && (AppState.currentUser?.isMaster || !product.adminId || sameAdminId(product.adminId, AppState.currentUser?.adminId)));
     }
     if (AppState.currentUser) {
       const previousPackagesByOrder = new Map(AppState.orders.map(order => [order.id, order.deliveryPackages || []]));
       AppState.orders = orders.map(order => normalizeOrder({
         id: order['Order ID'] || order.id,
+        productId: order['Product ID'] || order.productId || '',
         platform: order.Platform || order.platform || 'Other',
         productModel: order['Product Model'] || order.productModel || '',
         quantity: Number(order.Quantity || order.quantity) || 1,
@@ -687,7 +665,7 @@ async function triggerAutoCloudSync(actionType, data = {}) {
     payload = { customer: data.customer };
   } else if (actionType === "ADMIN_SYNC") {
     endpoint = '/admin/sync';
-    payload = { admin: AppState.adminProfile };
+    payload = { admin: data.profile || AppState.adminProfile };
   } else if (actionType === "ADMIN_CREATED") {
     endpoint = '/admin/create';
     payload = { admin: data.admin, actorAdminId: AppState.currentUser?.adminId };
@@ -778,9 +756,10 @@ window.addEventListener('online', flushOfflineQueue);
 
 // 3. Application State & Storage
 const AppState = {
-  adminProfile: { adminId: '', name: '', username: '', password: '', active: true },
+  adminProfile: { adminId: '', name: '', username: '', active: true },
   admins: [],
   currentUser: null,
+  activeAdminScope: null,
   products: [
     { id: 'p1', name: 'iPhone 16 128GB Black', targetPrice: 74900, commission: 1500 },
     { id: 'p2', name: 'REDMI Note 15 SE 5G', targetPrice: 16999, commission: 800 },
@@ -878,12 +857,22 @@ function normalizeOrder(order) {
   };
 }
 
+function getEffectiveAdminScopeId() {
+  if (!AppState.currentUser || AppState.currentUser.role !== 'admin') return null;
+  if (AppState.currentUser.isMaster) {
+    return AppState.activeAdminScope || AppState.currentUser.adminId;
+  }
+  return AppState.currentUser.adminId;
+}
+
 function getVisibleOrders() {
   if (!AppState.currentUser) return [];
   if (AppState.currentUser.role !== 'admin') {
     return AppState.orders.filter(order => order.customerId === AppState.currentUser.customerId);
   }
-  if (AppState.currentUser.isMaster) return AppState.orders;
+  const currentScope = getEffectiveAdminScopeId();
+  if (!currentScope) return [];
+  if (AppState.currentUser.isMaster) return AppState.orders.filter(order => sameAdminId(order.adminId, currentScope));
   return AppState.orders.filter(order => sameAdminId(order.adminId, AppState.currentUser.adminId));
 }
 
@@ -900,6 +889,16 @@ function getDeliveryDate(order) {
 
 function persistLocalState() {
   try {
+    delete AppState.adminProfile.password;
+    delete AppState.adminProfile.passwordHash;
+    AppState.admins.forEach(adminItem => {
+      delete adminItem.password;
+      delete adminItem.passwordHash;
+    });
+    AppState.customers.forEach(customer => {
+      delete customer.password;
+      delete customer.passwordHash;
+    });
     if (storageDb) {
       Promise.all([
         writeStoredState('orders', AppState.orders),
@@ -943,9 +942,20 @@ async function loadPersistedState() {
   }
   AppState.orders = AppState.orders.map(normalizeOrder).filter(order => order.id);
   if (AppState.adminProfile.username === 'master.admin' && AppState.adminProfile.password === 'admin123') {
-    AppState.adminProfile = { adminId: '', name: '', username: '', password: '', active: true };
+    AppState.adminProfile = { adminId: '', name: '', username: '', active: true };
   }
   AppState.customers = AppState.customers.filter(customer => !(customer.id === 'CUST-1001' && customer.password === 'booker123'));
+  delete AppState.adminProfile.password;
+  delete AppState.adminProfile.passwordHash;
+  AppState.admins.forEach(adminItem => {
+    delete adminItem.password;
+    delete adminItem.passwordHash;
+  });
+  AppState.customers.forEach(customer => {
+    delete customer.password;
+    delete customer.passwordHash;
+  });
+  persistLocalState();
   AppState.admins = AppState.admins.filter(adminItem => adminItem.adminId);
   if (AppState.adminProfile.adminId && !AppState.admins.some(adminItem => adminItem.adminId === AppState.adminProfile.adminId)) {
     AppState.admins.unshift(AppState.adminProfile);
@@ -1123,7 +1133,7 @@ async function logoutApp() {
   document.getElementById('view-auth').style.display = 'flex';
 }
 
-function handleSaveAdminProfile(e) {
+async function handleSaveAdminProfile(e) {
   e.preventDefault();
   const profile = {
     adminId: AppState.currentUser.adminId,
@@ -1133,13 +1143,15 @@ function handleSaveAdminProfile(e) {
     active: true
   };
   if (AppState.currentUser.isMaster) {
-    AppState.adminProfile = { ...AppState.adminProfile, ...profile };
+    AppState.adminProfile = { ...AppState.adminProfile, adminId: profile.adminId, name: profile.name, username: profile.username, active: true };
     AppState.currentUser = { ...AppState.currentUser, name: profile.name, username: profile.username };
-    triggerAutoCloudSync('ADMIN_SYNC');
+    await triggerAutoCloudSync('ADMIN_SYNC', { profile });
   } else {
     AppState.currentUser = { ...AppState.currentUser, name: profile.name, username: profile.username };
-    triggerAutoCloudSync('ADMIN_PROFILE_SYNC', { profile });
+    await triggerAutoCloudSync('ADMIN_PROFILE_SYNC', { profile });
   }
+  document.getElementById('cfg-admin-pass').value = '';
+  persistLocalState();
   alert('Admin profile update submitted.');
 }
 
@@ -1165,11 +1177,13 @@ function handleCreateAdmin(e) {
     adminId: document.getElementById('new-admin-id').value.trim(),
     name: document.getElementById('new-admin-name').value.trim(),
     username: document.getElementById('new-admin-username').value.trim(),
-    password: document.getElementById('new-admin-password').value,
     active: true,
     createdBy: AppState.currentUser.adminId
   };
-  if (AppState.admins.some(item => item.adminId === admin.adminId || item.username === admin.username)) {
+  const adminPayload = { ...admin, password: document.getElementById('new-admin-password').value };
+  if (AppState.admins.some(item => String(item.adminId).trim().toLowerCase() === admin.adminId.toLowerCase()
+    || String(item.username).trim().toLowerCase() === admin.username.toLowerCase())
+    || AppState.customers.some(item => String(item.username || item.id).trim().toLowerCase() === admin.username.toLowerCase())) {
     alert('Admin ID or username already exists.');
     return;
   }
@@ -1177,7 +1191,8 @@ function handleCreateAdmin(e) {
   persistLocalState();
   renderAdminAccessTable();
   closeModal('modal-create-admin');
-  triggerAutoCloudSync('ADMIN_CREATED', { admin });
+  triggerAutoCloudSync('ADMIN_CREATED', { admin: adminPayload });
+  document.getElementById('new-admin-password').value = '';
   alert(`Admin created. Username: ${admin.username}`);
 }
 
@@ -1467,7 +1482,15 @@ function orderDeliveryEntries(order) {
     status: packageEntry.status || (order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery'),
     packageEntry: true
   }));
-  return order.delivery?.submitted ? [{ id: '', delivery: order.delivery, gstDetails: order.gstDetails, status: order.status, packageEntry: false }] : [];
+  return order.delivery?.submitted ? [{
+    id: '',
+    sequence: 1,
+    doNumber: 'DO1',
+    delivery: order.delivery,
+    gstDetails: order.gstDetails,
+    status: order.status,
+    packageEntry: false
+  }] : [];
 }
 
 function renderDeliveryTable() {
@@ -1483,8 +1506,8 @@ function renderDeliveryTable() {
   const deliveries = getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    sequence: entry.sequence || (entry.packageEntry ? index + 1 : 0),
-    doNumber: entry.doNumber || (entry.packageEntry ? `DO${entry.sequence || index + 1}` : '')
+    sequence: entry.sequence || (entry.packageEntry ? index + 1 : 1),
+    doNumber: entry.doNumber || (entry.packageEntry ? `DO${entry.sequence || index + 1}` : 'DO1')
   }))).filter(item => {
     const o = item.order;
     const d = item.delivery;
@@ -1547,8 +1570,9 @@ function renderCustomersTable() {
   const search = (document.getElementById('cust-search')?.value || '').toLowerCase();
   const filterState = document.getElementById('cust-status-filter')?.value || 'ALL';
 
+  const currentScope = getEffectiveAdminScopeId();
   const customers = AppState.currentUser.isMaster
-    ? AppState.customers
+    ? AppState.customers.filter(customer => sameAdminId(customer.adminId, currentScope || AppState.currentUser.adminId))
     : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
   const filteredCustomers = customers.filter(c => {
     const cOrders = AppState.orders.filter(o => o.customerId === c.id);
@@ -1627,14 +1651,80 @@ async function deleteCustomer(customerId) {
 function renderAdminAccessTable() {
   const container = document.getElementById('admin-access-list');
   if (!container) return;
-  const masterId = AppState.adminProfile.adminId;
-  container.innerHTML = AppState.admins.map(admin => `
-    <div style="display:flex; justify-content:space-between; gap:8px; align-items:center; border-bottom:1px solid var(--border-subtle); padding:8px 0;">
-      <span><strong>${admin.adminId}</strong> ${admin.name || ''}<br /><small>${admin.username}</small></span>
-      <span><span class="pill ${admin.active === false ? 'pill-amber' : 'pill-green'}">${admin.active === false ? 'Revoked' : 'Active'}</span>
-      ${admin.adminId === masterId ? '<span class="pill pill-indigo">Master</span>' : `<button class="btn ${admin.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setAdminActive('${admin.adminId}', ${admin.active === false})">${admin.active === false ? 'Activate' : 'Revoke'}</button><button class="btn btn-danger btn-sm" onclick="deleteAdminAndData('${admin.adminId}')">Delete</button>`}</span>
-    </div>
-  `).join('') || '<span style="color:var(--text-muted);">No configured admins.</span>';
+
+  if (!AppState.currentUser?.isMaster) {
+    container.innerHTML = '<span style="color:var(--text-muted);">Only the Master Admin can manage subordinate admins.</span>';
+    return;
+  }
+
+  const masterId = AppState.adminProfile?.adminId || AppState.currentUser?.adminId;
+  const subordinateAdmins = AppState.admins.filter(admin => admin && admin.adminId && !sameAdminId(admin.adminId, masterId));
+  const scopedAdminId = AppState.activeAdminScope || null;
+
+  const ownerScopeButton = scopedAdminId
+    ? '<button class="btn btn-subtle btn-sm" onclick="returnToOwnerDashboard()">Return to Owner</button>'
+    : '';
+
+  container.innerHTML = subordinateAdmins.length
+    ? subordinateAdmins.map(admin => `
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; border-bottom:1px solid var(--border-subtle); padding:10px 0;">
+        <div>
+          <strong>${admin.adminId}</strong><br />
+          <small>${admin.name || 'Unnamed admin'} · ${admin.username || 'No username'}</small>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; align-items:center;">
+          <span class="pill ${admin.active === false ? 'pill-amber' : 'pill-green'}">${admin.active === false ? 'Revoked' : 'Active'}</span>
+          <button class="btn btn-subtle btn-sm" onclick="viewAdminProfile('${admin.adminId}')">Profile</button>
+          <button class="btn btn-subtle btn-sm" onclick="openAdminDashboard('${admin.adminId}')">${scopedAdminId && sameAdminId(scopedAdminId, admin.adminId) ? 'Current Scope' : 'Open Dashboard'}</button>
+          <button class="btn ${admin.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setAdminActive('${admin.adminId}', ${admin.active === false})">${admin.active === false ? 'Activate' : 'Revoke'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteAdminAndData('${admin.adminId}')">Delete Data</button>
+        </div>
+      </div>
+    `).join('') + ownerScopeButton
+    : `<span style="color:var(--text-muted);">No subordinate admins have been created yet.</span>${ownerScopeButton}`;
+}
+
+function openAdminDashboard(adminId) {
+  if (!AppState.currentUser?.isMaster) return;
+  const admin = AppState.admins.find(item => sameAdminId(item.adminId, adminId));
+  if (!admin) {
+    alert('Admin not found.');
+    return;
+  }
+  AppState.activeAdminScope = admin.adminId;
+  switchTab('tab-home');
+  renderAllViews();
+}
+
+function returnToOwnerDashboard() {
+  if (!AppState.currentUser?.isMaster) return;
+  AppState.activeAdminScope = null;
+  switchTab('tab-home');
+  renderAllViews();
+}
+
+function viewAdminProfile(adminId) {
+  if (!AppState.currentUser?.isMaster) return;
+  const admin = AppState.admins.find(item => sameAdminId(item.adminId, adminId));
+  if (!admin) {
+    alert('Admin profile was not found.');
+    return;
+  }
+
+  const fields = {
+    'admin-profile-id': admin.adminId || 'Unknown',
+    'admin-profile-status': admin.active === false ? 'Revoked' : 'Active',
+    'admin-profile-name': admin.name || 'Not set',
+    'admin-profile-username': admin.username || 'Not set',
+    'admin-profile-bookers': AppState.customers.filter(item => sameAdminId(item.adminId, admin.adminId)).length,
+    'admin-profile-bookings': AppState.orders.filter(item => sameAdminId(item.adminId, admin.adminId)).length
+  };
+
+  Object.entries(fields).forEach(([fieldId, value]) => {
+    const field = document.getElementById(fieldId);
+    if (field) field.textContent = String(value);
+  });
+  openModal('modal-admin-profile');
 }
 
 async function deleteAdminAndData(adminId) {
@@ -1812,17 +1902,30 @@ function renderProductListSettings() {
   const container = document.getElementById('settings-product-list');
   if (!container) return;
   container.innerHTML = '';
-  const products = AppState.currentUser?.isMaster ? AppState.products : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId));
+  const scopeId = getEffectiveAdminScopeId();
+  const products = AppState.currentUser?.isMaster
+    ? AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, scopeId || AppState.currentUser.adminId))
+    : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId));
   products.forEach(p => {
+    const canManage = AppState.currentUser?.isMaster || sameAdminId(p.adminId, AppState.currentUser?.adminId);
     container.innerHTML += `
       <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); padding:8px 12px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">
-        <div><strong>${p.name}</strong><br/><span style="color:var(--text-muted); font-size:0.72rem;">Buy: ₹${p.targetPrice.toLocaleString()}</span></div>
+        <div><strong>${p.name}</strong><br/><span style="color:var(--text-muted); font-size:0.72rem;">Buy: ₹${Number(p.targetPrice || 0).toLocaleString()} · ${p.adminId || 'Shared catalog'}</span></div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <span class="pill pill-green">+₹${p.commission} Comm.</span>
-          <button class="btn btn-subtle btn-sm" onclick="openEditProductModal('${p.id}')">✏️ Edit</button>
+          <span class="pill ${p.active === false ? 'pill-amber' : 'pill-green'}">${p.active === false ? 'Inactive' : `+₹${Number(p.commission || 0)} Comm.`}</span>
+          ${canManage ? `<button class="btn btn-subtle btn-sm" onclick="openEditProductModal('${p.id}')">✏️ Edit</button>
+          <button class="btn ${p.active === false ? 'btn-success' : 'btn-danger'} btn-sm" onclick="setProductActive('${p.id}', ${p.active === false})">${p.active === false ? 'Activate' : 'Deactivate'}</button>` : '<span class="pill">Read only</span>'}
         </div>
       </div>
     `;
+  });
+}
+
+function getAvailableProductsForCurrentUser(includeInactive = false) {
+  const actor = AppState.currentUser;
+  return AppState.products.filter(product => {
+    const inScope = actor?.isMaster || !product.adminId || sameAdminId(product.adminId, actor?.adminId);
+    return inScope && (includeInactive || product.active !== false);
   });
 }
 
@@ -1830,7 +1933,8 @@ function renderProductListSettings() {
 async function openNewOrderModal() {
   await syncCloudData().catch(error => console.warn('Unable to refresh data before booking:', error.message));
   const pSelect = document.getElementById('modal-order-product');
-  pSelect.innerHTML = `${AppState.products.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('')}<option value="Other">Other device</option>`;
+  const availableProducts = getAvailableProductsForCurrentUser();
+  pSelect.innerHTML = `${availableProducts.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('')}<option value="Other">Other device</option>`;
 
   const cSelect = document.getElementById('modal-order-customer-select');
   if (AppState.currentUser.role === 'admin') {
@@ -1844,7 +1948,7 @@ async function openNewOrderModal() {
 
   document.getElementById('modal-order-id').value = generateOrderId('');
   document.getElementById('modal-order-card').value = '';
-  document.getElementById('modal-order-paid').value = AppState.products[0].targetPrice;
+  document.getElementById('modal-order-paid').value = availableProducts[0]?.targetPrice || '';
   document.getElementById('modal-order-quantity').value = '1';
   document.getElementById('modal-order-advance').value = '0';
   document.getElementById('modal-order-platform-other').value = '';
@@ -1866,14 +1970,22 @@ function generateOrderId(value = '', prefix = 'OD') {
   const trimmed = String(value || '').trim();
   const existingIds = new Set(AppState.orders.map(order => String(order.id || '').trim()).filter(Boolean));
   if (trimmed && !existingIds.has(trimmed)) return trimmed;
-  const base = trimmed || prefix;
-  const suffix = Date.now().toString().slice(-6);
-  const random = Math.floor(Math.random() * 1000);
-  let candidate = `${base}${suffix}${random}`;
-  while (existingIds.has(candidate)) {
-    candidate = `${base}${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+  const safePrefix = String(trimmed || prefix || 'OD').replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase() || 'OD';
+  const suffix = String(Date.now()).slice(-6);
+  let candidate = `${safePrefix}${suffix}`.slice(0, 12);
+
+  if (!existingIds.has(candidate)) return candidate;
+
+  let fallback = 0;
+  while (fallback < 25) {
+    const nextSuffix = `${String(Date.now()).slice(-6)}${String(Math.floor(Math.random() * 900) + 100)}`.slice(0, 12 - safePrefix.length);
+    candidate = `${safePrefix}${nextSuffix}`.slice(0, 12);
+    if (!existingIds.has(candidate)) return candidate;
+    fallback += 1;
   }
-  return candidate;
+
+  return `${safePrefix}${suffix}`.slice(0, 12);
 }
 
 function autoFillOrderPrice() {
@@ -2042,6 +2154,10 @@ function handleCreateBooking(e) {
   e.preventDefault();
   const pid = document.getElementById('modal-order-product').value;
   const prod = AppState.products.find(p => p.id === pid);
+  if (pid !== 'Other' && (!prod || !getAvailableProductsForCurrentUser().some(product => product.id === pid))) {
+    alert('Select an active product assigned to your Admin account.');
+    return;
+  }
   const custId = document.getElementById('modal-order-customer-select').value;
   const cust = AppState.customers.find(c => String(c.id).trim() === String(custId).trim()) ||
     (AppState.currentUser.role === 'customer' && String(AppState.currentUser.customerId).trim() === String(custId).trim()
@@ -2060,6 +2176,7 @@ function handleCreateBooking(e) {
   document.getElementById('modal-order-id').value = newOrderId;
   const newOrder = {
     id: newOrderId,
+    productId: prod?.id || '',
     platform: document.getElementById('modal-order-platform').value === 'Other'
       ? document.getElementById('modal-order-platform-other').value.trim()
       : document.getElementById('modal-order-platform').value,
@@ -2428,17 +2545,24 @@ function handleCreateCustomerAccount(e) {
     username: document.getElementById('new-cust-id').value,
     name: document.getElementById('new-cust-name').value.trim(),
     mobile: document.getElementById('new-cust-mobile').value.trim(),
-    password: document.getElementById('new-cust-password').value.trim(),
     createdByAdmin: AppState.currentUser.name,
     adminId: AppState.currentUser.adminId || AppState.adminProfile.adminId,
     totalSettled: 0
   };
+  const initialPassword = document.getElementById('new-cust-password').value.trim();
 
+  const duplicateAccount = AppState.customers.some(item => String(item.id).trim().toLowerCase() === newCust.id.trim().toLowerCase())
+    || AppState.admins.some(item => String(item.username).trim().toLowerCase() === newCust.username.trim().toLowerCase());
+  if (duplicateAccount) {
+    alert('Booker ID or username already exists.');
+    return;
+  }
   AppState.customers.push(newCust);
   closeModal('modal-create-customer');
   renderCustomersTable();
-  triggerAutoCloudSync('CUSTOMER_CREATED', { customer: newCust });
-  alert(`Booker Created!\nID: ${newCust.id}\nPassword: ${newCust.password}`);
+  triggerAutoCloudSync('CUSTOMER_CREATED', { customer: { ...newCust, password: initialPassword } });
+  document.getElementById('new-cust-password').value = '';
+  alert(`Booker Created!\nID: ${newCust.id}\nPassword: ${initialPassword}`);
 }
 
 function openLifetimeDrilldownModal() {
@@ -2539,6 +2663,8 @@ function openNewProductModal() {
   document.getElementById('edit-prod-name').value = '';
   document.getElementById('edit-prod-price').value = '';
   document.getElementById('edit-prod-comm').value = '';
+  document.getElementById('edit-prod-active').checked = true;
+  configureProductOwnerSelect(AppState.currentUser?.adminId || '');
   openModal('modal-edit-product');
 }
 
@@ -2550,7 +2676,37 @@ function openEditProductModal(productId) {
   document.getElementById('edit-prod-name').value = p.name;
   document.getElementById('edit-prod-price').value = p.targetPrice;
   document.getElementById('edit-prod-comm').value = p.commission;
+  document.getElementById('edit-prod-active').checked = p.active !== false;
+  configureProductOwnerSelect(p.adminId || '');
   openModal('modal-edit-product');
+}
+
+function configureProductOwnerSelect(selectedAdminId) {
+  const field = document.getElementById('product-owner-field');
+  const select = document.getElementById('edit-prod-admin');
+  if (!field || !select) return;
+  const isMaster = AppState.currentUser?.isMaster === true;
+  field.style.display = isMaster ? '' : 'none';
+  if (!isMaster) return;
+
+  const admins = [...AppState.admins];
+  if (AppState.adminProfile?.adminId && !admins.some(item => sameAdminId(item.adminId, AppState.adminProfile.adminId))) {
+    admins.unshift(AppState.adminProfile);
+  }
+  select.innerHTML = '<option value="">Shared catalog (legacy)</option>' + admins.map(admin =>
+    `<option value="${admin.adminId}">${admin.name || admin.adminId} (${admin.adminId})${admin.active === false ? ' - Revoked' : ''}</option>`
+  ).join('');
+  select.value = selectedAdminId || '';
+}
+
+function setProductActive(productId, active) {
+  const product = AppState.products.find(item => item.id === productId);
+  if (!product || (!AppState.currentUser?.isMaster && !sameAdminId(product.adminId, AppState.currentUser?.adminId))) return;
+  if (!confirm(`${active ? 'Activate' : 'Deactivate'} ${product.name}?`)) return;
+  product.active = active;
+  persistLocalState();
+  renderProductListSettings();
+  triggerAutoCloudSync('PRODUCT_SYNC', { product });
 }
 
 function handleSaveProduct(e) {
@@ -2559,6 +2715,10 @@ function handleSaveProduct(e) {
   const name = document.getElementById('edit-prod-name').value.trim();
   const targetPrice = Number(document.getElementById('edit-prod-price').value);
   const commission = Number(document.getElementById('edit-prod-comm').value);
+  const active = document.getElementById('edit-prod-active').checked;
+  const adminId = AppState.currentUser?.isMaster
+    ? document.getElementById('edit-prod-admin').value
+    : AppState.currentUser.adminId;
 
   if (id) {
     const p = AppState.products.find(item => item.id === id);
@@ -2566,9 +2726,11 @@ function handleSaveProduct(e) {
       p.name = name;
       p.targetPrice = targetPrice;
       p.commission = commission;
+      p.adminId = adminId;
+      p.active = active;
     }
   } else {
-    AppState.products.push({ id: `p_${Date.now()}`, name, targetPrice, commission, adminId: AppState.currentUser.adminId, active: true });
+    AppState.products.push({ id: `p_${Date.now()}`, name, targetPrice, commission, adminId, active });
   }
 
   const savedProduct = AppState.products.find(item => item.id === (id || AppState.products[AppState.products.length - 1].id));
@@ -2582,8 +2744,8 @@ function handleSaveProduct(e) {
 
 function exportProductCatalogCSV() {
   const products = AppState.products.filter(product => AppState.currentUser?.isMaster || !product.adminId || product.adminId === AppState.currentUser?.adminId);
-  const csv = ['Product ID,Product Name,Target Price,Commission,Admin ID', ...products.map(product =>
-    [product.id, product.name, product.targetPrice, product.commission, product.adminId || ''].map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')
+  const csv = ['Product ID,Product Name,Target Price,Commission,Admin ID,Active', ...products.map(product =>
+    [product.id, product.name, product.targetPrice, product.commission, product.adminId || '', product.active !== false].map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')
   )].join('\n');
   triggerBlobDownload(csv, 'Product_Catalog.csv', 'text/csv;charset=utf-8;');
 }
@@ -2593,20 +2755,80 @@ function handleProductCatalogUpload(input) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    const lines = String(reader.result || '').split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) return alert('Catalog CSV must contain a header and at least one product.');
-    lines.slice(1).forEach(line => {
-      const values = line.split(',').map(value => value.trim().replace(/^"|"$/g, '').replaceAll('""', '"'));
-      const [id, name, targetPrice, commission] = values;
-      if (!name) return;
-      const product = { id: id || `p_${Date.now()}_${Math.random().toString(36).slice(2)}`, name, targetPrice: csvOrNumber(targetPrice), commission: csvOrNumber(commission), adminId: AppState.currentUser.adminId, active: true };
+    let rows;
+    try {
+      rows = window.DeviceTradeCsv.parseCsv(String(reader.result || ''));
+    } catch (error) {
+      alert(`Catalog CSV could not be parsed: ${error.message}`);
+      return;
+    }
+    if (rows.length < 2) return alert('Catalog CSV must contain a header and at least one product.');
+    const headers = rows[0].map(value => value.trim().toLowerCase());
+    const column = (...names) => headers.findIndex(header => names.includes(header));
+    const columns = {
+      id: column('product id', 'id'),
+      name: column('product name', 'name'),
+      price: column('target price', 'target buy price', 'price'),
+      commission: column('commission', 'booker commission'),
+      adminId: column('admin id', 'adminid'),
+      active: column('active', 'status')
+    };
+    if (columns.name < 0 || columns.price < 0 || columns.commission < 0) {
+      alert('Catalog CSV needs Product Name, Target Price, and Commission columns.');
+      return;
+    }
+
+    let imported = 0;
+    const errors = [];
+    const seenIds = new Set();
+    rows.slice(1).forEach((values, index) => {
+      const rowNumber = index + 2;
+      const cell = key => columns[key] < 0 ? '' : String(values[columns[key]] || '').trim();
+      const id = cell('id') || `p_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const name = cell('name');
+      const targetPrice = Number(cell('price'));
+      const commission = Number(cell('commission'));
+      const requestedOwner = cell('adminId');
+      const activeValue = cell('active').toLowerCase();
+      const normalizedId = id.trim().toLowerCase();
+      if (seenIds.has(normalizedId)) {
+        errors.push(`Row ${rowNumber}: duplicate product ID ${id} in this file.`);
+        return;
+      }
+      seenIds.add(normalizedId);
+      if (!name || !Number.isFinite(targetPrice) || targetPrice < 0 || !Number.isFinite(commission) || commission < 0) {
+        errors.push(`Row ${rowNumber}: missing name or invalid amount.`);
+        return;
+      }
+      if (activeValue && !['true', 'false', 'active', 'inactive', 'revoked'].includes(activeValue)) {
+        errors.push(`Row ${rowNumber}: Active must be true/false or active/inactive.`);
+        return;
+      }
+      const adminId = AppState.currentUser?.isMaster ? requestedOwner : AppState.currentUser.adminId;
+      if (adminId && AppState.currentUser?.isMaster && !AppState.admins.some(admin => sameAdminId(admin.adminId, adminId))) {
+        errors.push(`Row ${rowNumber}: assigned Admin ${adminId} was not found.`);
+        return;
+      }
+      const product = {
+        id,
+        name,
+        targetPrice,
+        commission,
+        adminId: adminId || '',
+        active: !['false', 'inactive', 'revoked'].includes(activeValue)
+      };
       const existing = AppState.products.find(item => item.id === product.id);
+      if (existing && !AppState.currentUser?.isMaster && !sameAdminId(existing.adminId, AppState.currentUser.adminId)) {
+        errors.push(`Row ${rowNumber}: product ID ${id} belongs to another Admin.`);
+        return;
+      }
       if (existing) Object.assign(existing, product); else AppState.products.push(product);
       triggerAutoCloudSync('PRODUCT_SYNC', { product });
+      imported += 1;
     });
     persistLocalState();
     renderProductListSettings();
-    alert('Product catalog uploaded and queued for sync.');
+    alert(`Imported ${imported} product(s).${errors.length ? `\nSkipped ${errors.length} row(s):\n${errors.slice(0, 5).join('\n')}` : ''}`);
     input.value = '';
   };
   reader.readAsText(file);
@@ -2641,8 +2863,8 @@ function getFilteredDeliveries() {
   return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 0,
-    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : ''
+    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 1,
+    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
   }))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (date && (delivery.deliveryDate || entry.order.createdAt) !== date)) return false;
@@ -2681,8 +2903,8 @@ function getTodayModalDeliveries() {
   return getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 0,
-    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : ''
+    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 1,
+    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
   }))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== todayIsoDate()) return false;

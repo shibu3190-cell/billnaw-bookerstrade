@@ -35,7 +35,8 @@
   <link rel="apple-touch-icon" href="icons/icon.svg" />
 
   <link rel="stylesheet" href="style.css?v=20261010" />
-  <script defer src="app.js?v=20261010"></script>
+  <script defer src="csv.js?v=20261010"></script>
+  <script defer src="app.js?v=20261011"></script>
 </head>
 <body>
 
@@ -108,10 +109,6 @@
       <nav class="nav-links-desktop" id="desktop-nav-container"></nav>
 
       <div class="header-actions">
-        <div class="sync-status" title="Sync Status">
-          <div class="sync-dot" id="cloud-sync-dot"></div>
-          <span id="cloud-sync-label">Online</span>
-        </div>
         <div class="user-profile-info">
           <span id="user-display-label">Admin</span>
         </div>
@@ -394,6 +391,24 @@
   </div>
 
   <!-- MODALS -->
+
+  <!-- Modal: Subordinate Admin Profile -->
+  <div class="modal-backdrop" id="modal-admin-profile" role="dialog" aria-modal="true" aria-labelledby="admin-profile-title">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title" id="admin-profile-title">Admin Profile</div>
+        <button class="modal-close" onclick="closeModal('modal-admin-profile')" aria-label="Close profile">&times;</button>
+      </div>
+      <dl class="form-grid two-col" style="margin:0;">
+        <div class="form-field"><dt class="form-label">Admin ID</dt><dd id="admin-profile-id" style="margin:0;"></dd></div>
+        <div class="form-field"><dt class="form-label">Status</dt><dd id="admin-profile-status" style="margin:0;"></dd></div>
+        <div class="form-field"><dt class="form-label">Name</dt><dd id="admin-profile-name" style="margin:0;"></dd></div>
+        <div class="form-field"><dt class="form-label">Username</dt><dd id="admin-profile-username" style="margin:0;"></dd></div>
+        <div class="form-field"><dt class="form-label">Bookers</dt><dd id="admin-profile-bookers" style="margin:0;"></dd></div>
+        <div class="form-field"><dt class="form-label">Bookings</dt><dd id="admin-profile-bookings" style="margin:0;"></dd></div>
+      </dl>
+    </div>
+  </div>
 
   <!-- Modal: Lifetime Bookings Filter -->
   <div class="modal-backdrop" id="modal-lifetime-drilldown">
@@ -827,6 +842,10 @@
           <label class="form-label">Product Name & Spec</label>
           <input type="text" id="edit-prod-name" class="form-input" placeholder="e.g. iPhone 16 Pro 256GB" required />
         </div>
+        <div class="form-field" id="product-owner-field" style="display:none;">
+          <label class="form-label" for="edit-prod-admin">Assigned Admin</label>
+          <select id="edit-prod-admin" class="form-select"></select>
+        </div>
         <div class="form-grid two-col">
           <div class="form-field">
             <label class="form-label">Target Buy Price (₹)</label>
@@ -837,6 +856,10 @@
             <input type="number" id="edit-prod-comm" class="form-input" placeholder="3000" required />
           </div>
         </div>
+        <label class="form-field" style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="edit-prod-active" checked />
+          <span class="form-label" style="margin:0;">Product is active</span>
+        </label>
         <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 10px;">Save Product</button>
       </form>
     </div>
