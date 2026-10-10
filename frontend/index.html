@@ -18,6 +18,13 @@
 </head>
 <body>
 
+<div id="app-loading-overlay" class="app-loading-overlay" aria-live="polite" aria-busy="false" hidden>
+  <div class="app-loading-card">
+    <div class="app-loading-spinner"></div>
+    <div class="app-loading-text">Saving...</div>
+  </div>
+</div>
+
 <div class="app-viewport">
 
   <!-- PWA Install Prompt Banner -->
@@ -177,6 +184,7 @@
               <tbody id="table-all-orders"></tbody>
             </table>
           </div>
+          <div id="orders-pagination" class="table-pagination-wrapper"></div>
         </div>
       </section>
 
@@ -225,6 +233,7 @@
               <tbody id="table-delivery-list"></tbody>
             </table>
           </div>
+          <div id="deliveries-pagination" class="table-pagination-wrapper"></div>
         </div>
       </section>
 
@@ -261,6 +270,7 @@
               <tbody id="table-customers-list"></tbody>
             </table>
           </div>
+          <div id="customers-pagination" class="table-pagination-wrapper"></div>
         </div>
       </section>
 
@@ -533,6 +543,10 @@
       </div>
       <form onsubmit="handleSaveDeliveryWithGst(event)">
         <input type="hidden" id="deliv-form-order-id" />
+        <div class="form-field" style="margin-bottom:12px;">
+          <label class="form-label" for="deliv-order-id-input">Order ID (optional)</label>
+          <input type="text" id="deliv-order-id-input" class="form-input" placeholder="Leave blank to auto-generate" />
+        </div>
         <div id="direct-delivery-fields" class="direct-delivery-fields" hidden>
           <div class="form-grid two-col">
             <div class="form-field">

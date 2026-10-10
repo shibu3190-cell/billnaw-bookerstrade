@@ -192,38 +192,75 @@ function updateQueueBadge() {
 async function dispatchToBackend(endpoint, payload) {
   // Always include secretToken in both header and body payload
   const fullPayload = { ...payload, secretToken: API_CONFIG.secretToken };
-  const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': API_CONFIG.secretToken,
-      ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
-    },
-    body: JSON.stringify(fullPayload)
-  });
+  setAppLoadingState(endpoint.includes('/orders/') || endpoint.includes('/customers/') || endpoint.includes('/admin/') ? 'Syncing data...' : 'Saving...', true);
+  try {
+    const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': API_CONFIG.secretToken,
+        ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
+      },
+      body: JSON.stringify(fullPayload)
+    });
 
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({}));
-    if (res.status === 401 && errorBody.message === 'An active login session is required.') {
-      await logoutApp();
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      if (res.status === 401 && errorBody.message === 'An active login session is required.') {
+        await logoutApp();
+      }
+      const error = new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
     }
-    const error = new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
-    error.status = res.status;
-    throw error;
+    return await res.json();
+  } finally {
+    setAppLoadingState('Saving...', false);
   }
-  return await res.json();
 }
 
 async function fetchFromBackend(endpoint) {
-  const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
-    headers: {
-      'x-api-key': API_CONFIG.secretToken,
-      ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
-    }
-  });
-  const result = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(result.message || `HTTP ${res.status}`);
-  return result;
+  setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true);
+  try {
+    const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
+      headers: {
+        'x-api-key': API_CONFIG.secretToken,
+        ...(AppState.sessionToken ? { 'x-session-token': AppState.sessionToken } : {})
+      }
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.message || `HTTP ${res.status}`);
+    return result;
+  } finally {
+    setAppLoadingState('Loading data...', false);
+  }
+}
+
+function setAppLoadingState(message = 'Saving...', visible = true) {
+  const overlay = document.getElementById('app-loading-overlay');
+  const text = overlay?.querySelector('.app-loading-text');
+  if (!overlay || !text) return;
+  text.textContent = message;
+  overlay.hidden = !visible;
+  overlay.setAttribute('aria-busy', String(visible));
+}
+
+function setButtonLoadingState(button, label, isLoading) {
+  if (!button) return;
+  const originalText = button.dataset.originalText || button.textContent.trim();
+  if (!button.dataset.originalText) button.dataset.originalText = originalText;
+  button.disabled = isLoading;
+  button.classList.toggle('is-loading', isLoading);
+  button.textContent = isLoading ? label : originalText;
+}
+
+function findButtonByAction(actionName, actionArg) {
+  if (!actionArg) return null;
+  const match = `${actionName}('${actionArg}'`;
+  return [...document.querySelectorAll('button')].find(button => {
+    const handler = button.getAttribute('onclick') || '';
+    return handler.includes(match) || handler.includes(`${actionName}(\"${actionArg}\"`);
+  }) || null;
 }
 
 function setDataManagementStatus(message, isError = false) {
@@ -628,7 +665,12 @@ const AppState = {
   customers: [],
   orders: [],
   tempGstFileData: null,
-  sessionToken: ''
+  sessionToken: '',
+  pagination: {
+    orders: { page: 1, pageSize: 25 },
+    deliveries: { page: 1, pageSize: 20 },
+    customers: { page: 1, pageSize: 20 }
+  }
 };
 
 let cloudSyncTimer = null;
@@ -793,6 +835,8 @@ function debounce(func, delay = 200) {
     timeoutId = setTimeout(() => func.apply(this, args), delay);
   };
 }
+
+const MAX_TABLE_ROWS = 80;
 
 const debouncedRenderOrders = debounce(renderOrdersTable, 200);
 const debouncedRenderDeliveries = debounce(renderDeliveryTable, 200);
@@ -1129,6 +1173,37 @@ function updateTodayBadge() {
   if (badge) badge.textContent = `${count} Shipments`;
 }
 
+function getPaginationState(key, defaultSize = 25) {
+  const state = AppState.pagination[key] || { page: 1, pageSize: defaultSize };
+  AppState.pagination[key] = { ...state, pageSize: defaultSize };
+  return AppState.pagination[key];
+}
+
+function renderPaginationControls(containerId, key, totalCount, defaultSize = 25) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const state = getPaginationState(key, defaultSize);
+  const totalPages = Math.max(1, Math.ceil(totalCount / state.pageSize));
+  state.page = Math.min(Math.max(1, state.page), totalPages);
+
+  const prevDisabled = state.page <= 1 ? 'disabled' : '';
+  const nextDisabled = state.page >= totalPages ? 'disabled' : '';
+  const label = totalCount === 0 ? 'No rows' : `Page ${state.page} / ${totalPages}`;
+
+  container.innerHTML = `
+    <div class="table-pagination">
+      <button class="btn btn-subtle btn-sm" data-page-role="prev" ${prevDisabled}>Prev</button>
+      <span>${label}</span>
+      <button class="btn btn-subtle btn-sm" data-page-role="next" ${nextDisabled}>Next</button>
+    </div>
+  `;
+
+  const prevButton = container.querySelector('[data-page-role="prev"]');
+  const nextButton = container.querySelector('[data-page-role="next"]');
+  if (prevButton && !prevDisabled) prevButton.onclick = () => { state.page = Math.max(1, state.page - 1); renderAllViews(); };
+  if (nextButton && !nextDisabled) nextButton.onclick = () => { state.page = Math.min(totalPages, state.page + 1); renderAllViews(); };
+}
+
 function renderHomeOrders() {
   const homeTbody = document.getElementById('table-home-orders');
   if (!homeTbody) return;
@@ -1186,12 +1261,18 @@ function renderOrdersTable() {
     return true;
   });
 
+  const paginationState = getPaginationState('orders', 25);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / paginationState.pageSize));
+  paginationState.page = Math.min(Math.max(1, paginationState.page), totalPages);
+  const pageItems = filtered.slice((paginationState.page - 1) * paginationState.pageSize, paginationState.page * paginationState.pageSize);
+
   if (filtered.length === 0) {
     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:20px;">No matching bookings.</td></tr>`;
+    renderPaginationControls('orders-pagination', 'orders', 0, 25);
     return;
   }
 
-  filtered.forEach(o => {
+  pageItems.forEach(o => {
     const due = o.payableAmount - (o.advancePaid || 0) - (o.settledAmount || 0);
     tbody.innerHTML += `
       <tr>
@@ -1218,20 +1299,28 @@ function renderOrdersTable() {
       </tr>
     `;
   });
+
+  renderPaginationControls('orders-pagination', 'orders', filtered.length, 25);
 }
 
 function approveBooking(orderId) {
   const order = AppState.orders.find(item => item.id === orderId);
   if (!order || AppState.currentUser?.role !== 'admin' || !confirm(`Approve booking ${orderId}?`)) return;
-  order.status = order.deliveryPackages?.length ? 'Out for Delivery' : 'Booked';
-  if (order.deliveryPackages?.length) {
-    order.deliveryPackages = order.deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }));
-    order.isToday = true;
+  const triggerButton = findButtonByAction('approveBooking', orderId);
+  setButtonLoadingState(triggerButton, 'Approving...', true);
+  try {
+    order.status = order.deliveryPackages?.length ? 'Out for Delivery' : 'Booked';
+    if (order.deliveryPackages?.length) {
+      order.deliveryPackages = order.deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }));
+      order.isToday = true;
+    }
+    order.approvedBy = AppState.currentUser.adminId;
+    order.approvedAt = new Date().toISOString();
+    renderAllViews();
+    triggerAutoCloudSync('ORDER_APPROVED', { orderId });
+  } finally {
+    setButtonLoadingState(triggerButton, 'Approving...', false);
   }
-  order.approvedBy = AppState.currentUser.adminId;
-  order.approvedAt = new Date().toISOString();
-  renderAllViews();
-  triggerAutoCloudSync('ORDER_APPROVED', { orderId });
 }
 
 function orderDeliveryEntries(order) {
@@ -1278,12 +1367,18 @@ function renderDeliveryTable() {
     return true;
   });
 
+  const paginationState = getPaginationState('deliveries', 20);
+  const totalPages = Math.max(1, Math.ceil(deliveries.length / paginationState.pageSize));
+  paginationState.page = Math.min(Math.max(1, paginationState.page), totalPages);
+  const pageItems = deliveries.slice((paginationState.page - 1) * paginationState.pageSize, paginationState.page * paginationState.pageSize);
+
   if (deliveries.length === 0) {
     tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; color:var(--text-muted); padding:20px;">No deliveries found.</td></tr>`;
+    renderPaginationControls('deliveries-pagination', 'deliveries', 0, 20);
     return;
   }
 
-  deliveries.forEach(item => {
+  pageItems.forEach(item => {
     const { order: o, delivery: d, gstDetails: packageGst, id: packageId } = item;
     const deliveryStatus = item.status || o.status;
     tbody.innerHTML += `
@@ -1307,6 +1402,8 @@ function renderDeliveryTable() {
       </tr>
     `;
   });
+
+  renderPaginationControls('deliveries-pagination', 'deliveries', deliveries.length, 20);
 }
 
 function renderCustomersTable() {
@@ -1320,11 +1417,26 @@ function renderCustomersTable() {
   const customers = AppState.currentUser.isMaster
     ? AppState.customers
     : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
-  customers.forEach(c => {
+  const filteredCustomers = customers.filter(c => {
     const cOrders = AppState.orders.filter(o => o.customerId === c.id);
-    if (filterState !== 'ALL' && !cOrders.some(o => o.status === filterState)) return;
-    if (search && !c.name.toLowerCase().includes(search) && !c.id.toLowerCase().includes(search)) return;
+    if (filterState !== 'ALL' && !cOrders.some(o => o.status === filterState)) return false;
+    if (search && !c.name.toLowerCase().includes(search) && !c.id.toLowerCase().includes(search)) return false;
+    return true;
+  });
 
+  const paginationState = getPaginationState('customers', 20);
+  const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / paginationState.pageSize));
+  paginationState.page = Math.min(Math.max(1, paginationState.page), totalPages);
+  const pageItems = filteredCustomers.slice((paginationState.page - 1) * paginationState.pageSize, paginationState.page * paginationState.pageSize);
+
+  if (filteredCustomers.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:20px;">No matching bookers.</td></tr>`;
+    renderPaginationControls('customers-pagination', 'customers', 0, 20);
+    return;
+  }
+
+  pageItems.forEach(c => {
+    const cOrders = AppState.orders.filter(o => o.customerId === c.id);
     const volume = cOrders.reduce((s, o) => s + o.amountPaid, 0);
     const advance = cOrders.reduce((s, o) => s + (o.advancePaid || 0), 0);
     const settled = c.totalSettled || 0;
@@ -1347,6 +1459,8 @@ function renderCustomersTable() {
       </tr>
     `;
   });
+
+  renderPaginationControls('customers-pagination', 'customers', filteredCustomers.length, 20);
 }
 
 function setCustomerActive(customerId, active) {
@@ -1361,6 +1475,8 @@ function setCustomerActive(customerId, active) {
 async function deleteCustomer(customerId) {
   const customer = AppState.customers.find(item => item.id === customerId);
   if (!customer || !confirm(`Delete booker ${customer.id} and all their bookings? This cannot be undone.`)) return;
+  const triggerButton = findButtonByAction('deleteCustomer', customerId);
+  setButtonLoadingState(triggerButton, 'Deleting...', true);
   try {
     const result = await dispatchToBackend('/customers/delete', { customerId });
     AppState.customers = AppState.customers.filter(item => item.id !== customerId);
@@ -1370,6 +1486,8 @@ async function deleteCustomer(customerId) {
     alert(`Booker deleted. ${result.deletedOrders || 0} booking(s) removed.`);
   } catch (error) {
     alert(`Booker deletion failed: ${error.message}`);
+  } finally {
+    setButtonLoadingState(triggerButton, 'Deleting...', false);
   }
 }
 
@@ -1386,15 +1504,26 @@ function renderAdminAccessTable() {
   `).join('') || '<span style="color:var(--text-muted);">No configured admins.</span>';
 }
 
-function deleteAdminAndData(adminId) {
+async function deleteAdminAndData(adminId) {
   if (!AppState.currentUser?.isMaster || !confirm(`Delete ${adminId} and all of its bookers, products, and bookings? This cannot be undone.`)) return;
-  AppState.admins = AppState.admins.filter(admin => !sameAdminId(admin.adminId, adminId));
-  AppState.customers = AppState.customers.filter(customer => !sameAdminId(customer.adminId, adminId));
-  AppState.products = AppState.products.filter(product => !sameAdminId(product.adminId, adminId));
-  AppState.orders = AppState.orders.filter(order => !sameAdminId(order.adminId, adminId));
-  persistLocalState();
-  renderAllViews();
-  triggerAutoCloudSync('ADMIN_DELETED', { adminId });
+  const triggerButton = findButtonByAction('deleteAdminAndData', adminId);
+  setButtonLoadingState(triggerButton, 'Deleting...', true);
+  setAppLoadingState(`Deleting ${adminId} and related data...`, true);
+  try {
+    const result = await dispatchToBackend('/admin/delete', { adminId });
+    AppState.admins = AppState.admins.filter(admin => !sameAdminId(admin.adminId, adminId));
+    AppState.customers = AppState.customers.filter(customer => !sameAdminId(customer.adminId, adminId));
+    AppState.products = AppState.products.filter(product => !sameAdminId(product.adminId, adminId));
+    AppState.orders = AppState.orders.filter(order => !sameAdminId(order.adminId, adminId));
+    persistLocalState();
+    renderAllViews();
+    alert(result.message || `Admin ${adminId} and its data were deleted from the server.`);
+  } catch (error) {
+    alert(`Admin deletion failed: ${error.message}`);
+  } finally {
+    setButtonLoadingState(triggerButton, 'Deleting...', false);
+    setAppLoadingState('Deleting...', false);
+  }
 }
 
 function setAdminActive(adminId, active) {
@@ -1580,7 +1709,7 @@ async function openNewOrderModal() {
     cSelect.innerHTML = `<option value="${AppState.currentUser.customerId}">${AppState.currentUser.name}</option>`;
   }
 
-  document.getElementById('modal-order-id').value = `OD${Math.floor(1000000000 + Math.random() * 9000000000)}`;
+  document.getElementById('modal-order-id').value = generateOrderId('');
   document.getElementById('modal-order-card').value = '';
   document.getElementById('modal-order-paid').value = AppState.products[0].targetPrice;
   document.getElementById('modal-order-quantity').value = '1';
@@ -1598,6 +1727,20 @@ function handleBookingOtherField(type) {
   if (!field || !select) return;
   field.style.display = select.value === 'Other' ? 'block' : 'none';
   field.required = select.value === 'Other';
+}
+
+function generateOrderId(value = '', prefix = 'OD') {
+  const trimmed = String(value || '').trim();
+  const existingIds = new Set(AppState.orders.map(order => String(order.id || '').trim()).filter(Boolean));
+  if (trimmed && !existingIds.has(trimmed)) return trimmed;
+  const base = trimmed || prefix;
+  const suffix = Date.now().toString().slice(-6);
+  const random = Math.floor(Math.random() * 1000);
+  let candidate = `${base}${suffix}${random}`;
+  while (existingIds.has(candidate)) {
+    candidate = `${base}${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  }
+  return candidate;
 }
 
 function autoFillOrderPrice() {
@@ -1686,6 +1829,7 @@ function openDirectDeliveryEntry() {
   directDeliveryPackageIndex = 0;
   setDirectDeliveryFieldsActive(true);
   document.getElementById('deliv-form-order-id').value = '';
+  document.getElementById('deliv-order-id-input').value = '';
   const productSelect = document.getElementById('direct-delivery-product');
   productSelect.innerHTML = `${AppState.products.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}<option value="Other">Custom model</option>`;
   const ownerSelect = document.getElementById('direct-delivery-owner');
@@ -1727,6 +1871,7 @@ function continueDirectDeliveryEntry(orderId) {
   openDirectDeliveryEntry();
   directDeliveryPackageIndex = order.deliveryPackages?.length || 0;
   document.getElementById('deliv-form-order-id').value = order.id;
+  document.getElementById('deliv-order-id-input').value = order.id;
   document.getElementById('deliv-form-model').value = order.productModel;
   const product = AppState.products.find(item => item.name === order.productModel);
   document.getElementById('direct-delivery-product').value = product?.id || 'Other';
@@ -1770,8 +1915,10 @@ function handleCreateBooking(e) {
   const adv = Number(document.getElementById('modal-order-advance').value) || 0;
   const comm = prod ? prod.commission : 1000;
 
+  const newOrderId = generateOrderId(document.getElementById('modal-order-id').value.trim());
+  document.getElementById('modal-order-id').value = newOrderId;
   const newOrder = {
-    id: document.getElementById('modal-order-id').value.trim(),
+    id: newOrderId,
     platform: document.getElementById('modal-order-platform').value === 'Other'
       ? document.getElementById('modal-order-platform-other').value.trim()
       : document.getElementById('modal-order-platform').value,
@@ -1811,6 +1958,7 @@ function openDeliveryModalForOrder(orderId) {
   document.getElementById('deliv-form-platform').disabled = false;
   document.getElementById('deliv-form-platform-other').disabled = false;
   document.getElementById('deliv-form-order-id').value = o.id;
+  document.getElementById('deliv-order-id-input').value = o.id;
   document.getElementById('deliv-form-model').value = o.productModel;
   document.getElementById('deliv-form-platform').value = o.platform || 'Flipkart';
   document.getElementById('deliv-form-platform-other').value = '';
@@ -1866,8 +2014,18 @@ function recalcGstTotal() {
 
 async function handleSaveDeliveryWithGst(e) {
   e.preventDefault();
-  const orderId = document.getElementById('deliv-form-order-id').value;
-  let order = AppState.orders.find(o => o.id === orderId);
+  const visibleOrderIdInput = document.getElementById('deliv-order-id-input');
+  const orderId = generateOrderId(visibleOrderIdInput?.value || document.getElementById('deliv-form-order-id').value);
+  if (visibleOrderIdInput) visibleOrderIdInput.value = orderId;
+  document.getElementById('deliv-form-order-id').value = orderId;
+  const submitButton = document.getElementById('delivery-submit-button');
+  const packageLabel = directDeliveryEntry && Number(document.getElementById('direct-delivery-quantity')?.value || 1) > 1
+    ? `Saving package ${Math.min(directDeliveryPackageIndex + 1, Number(document.getElementById('direct-delivery-quantity')?.value || 1))}...`
+    : (directDeliveryEntry ? 'Saving delivery package...' : 'Saving delivery...');
+  setAppLoadingState(packageLabel, true);
+  setButtonLoadingState(submitButton, packageLabel, true);
+  try {
+    let order = AppState.orders.find(o => o.id === orderId);
   if (directDeliveryEntry && !order) {
     const selectedProductId = document.getElementById('direct-delivery-product').value;
     const product = AppState.products.find(item => item.id === selectedProductId);
@@ -1885,8 +2043,9 @@ async function handleSaveDeliveryWithGst(e) {
         : AppState.customers.find(item => item.id === ownerId);
     if (!customer) return alert('Choose a valid booker account.');
     const commission = Number(product?.commission) || 0;
+    const uniqueOrderId = generateOrderId(orderId);
     order = {
-      id: `OD${Date.now()}${Math.floor(Math.random() * 1000)}`,
+      id: uniqueOrderId,
       platform: document.getElementById('deliv-form-platform').value === 'Other'
         ? document.getElementById('deliv-form-platform-other').value.trim()
         : document.getElementById('deliv-form-platform').value,
@@ -1911,6 +2070,7 @@ async function handleSaveDeliveryWithGst(e) {
     };
     AppState.orders.unshift(order);
     document.getElementById('deliv-form-order-id').value = order.id;
+    if (visibleOrderIdInput) visibleOrderIdInput.value = order.id;
     const createResult = await triggerAutoCloudSync('NEW_ORDER', { order });
     if (createResult?.status === 'rejected') {
       AppState.orders = AppState.orders.filter(item => item.id !== order.id);
@@ -2019,26 +2179,36 @@ async function handleSaveDeliveryWithGst(e) {
     renderAllViews();
     triggerAutoCloudSync('DELIVERY_SUBMITTED', { order });
   }
-  directDeliveryEntry = false;
-  closeModal('modal-delivery-submission');
-  renderAllViews();
+    directDeliveryEntry = false;
+    closeModal('modal-delivery-submission');
+    renderAllViews();
+  } finally {
+    setAppLoadingState(directDeliveryEntry ? 'Saving delivery package...' : 'Saving delivery...', false);
+    setButtonLoadingState(submitButton, packageLabel, false);
+  }
 }
 
 function markOrderDelivered(orderId, packageId = '') {
   const o = AppState.orders.find(item => item.id === orderId);
   if (o && confirm(`Mark ${o.id} Delivered?`)) {
-    if (packageId) {
-      const packageEntry = o.deliveryPackages?.find(item => item.id === packageId);
-      if (!packageEntry) return;
-      packageEntry.status = 'Delivered';
-      if (o.deliveryPackages.every(item => item.status === 'Delivered')) o.status = 'Delivered';
-      persistLocalState();
-      triggerAutoCloudSync('PACKAGE_STATUS_CHANGED', { orderId, packageId, status: 'Delivered' });
-    } else {
-      o.status = 'Delivered';
-      triggerAutoCloudSync('STATUS_CHANGED', { order: o });
+    const triggerButton = findButtonByAction('markOrderDelivered', orderId) || findButtonByAction('markOrderDelivered', `${orderId}, '${packageId}'`);
+    setButtonLoadingState(triggerButton, 'Marking...', true);
+    try {
+      if (packageId) {
+        const packageEntry = o.deliveryPackages?.find(item => item.id === packageId);
+        if (!packageEntry) return;
+        packageEntry.status = 'Delivered';
+        if (o.deliveryPackages.every(item => item.status === 'Delivered')) o.status = 'Delivered';
+        persistLocalState();
+        triggerAutoCloudSync('PACKAGE_STATUS_CHANGED', { orderId, packageId, status: 'Delivered' });
+      } else {
+        o.status = 'Delivered';
+        triggerAutoCloudSync('STATUS_CHANGED', { order: o });
+      }
+      renderAllViews();
+    } finally {
+      setButtonLoadingState(triggerButton, 'Marking...', false);
     }
-    renderAllViews();
   }
 }
 

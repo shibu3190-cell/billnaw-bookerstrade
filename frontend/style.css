@@ -179,6 +179,51 @@ body {
   border: 1px solid var(--border-subtle);
 }
 
+.app-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.app-loading-card {
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid var(--border-subtle);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+  padding: 22px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: min(260px, calc(100vw - 32px));
+}
+
+.app-loading-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 3px solid rgba(148, 163, 184, 0.25);
+  border-top-color: var(--primary);
+  animation: spin 0.9s linear infinite;
+}
+
+.app-loading-text {
+  color: var(--text-main);
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .sync-dot {
   width: 7px;
   height: 7px;
@@ -410,6 +455,26 @@ body {
   box-shadow: 0 4px 16px rgba(0,0,0,0.2);
 }
 
+.table-pagination-wrapper {
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.table-pagination .btn {
+  min-width: 72px;
+}
+
 .table-responsive {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -471,6 +536,12 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
+}
+
+.btn.is-loading {
+  opacity: 0.8;
+  cursor: wait;
+  pointer-events: none;
 }
 
 .btn-primary { background: var(--primary); color: white; }
