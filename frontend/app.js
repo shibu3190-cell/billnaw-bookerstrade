@@ -229,8 +229,34 @@ async function initializeStorage() {
 const storageReady = initializeStorage();
 let appLoadingRequestCount = 0;
 
+function updateSyncStatus(status = 'online', label = '') {
+  const item = document.getElementById('global-sync-status');
+  if (!item) return;
+
+  const dot = item.querySelector('.sync-dot');
+  const text = item.querySelector('.sync-label');
+  const nextState = String(status || 'online').toLowerCase();
+  const nextLabel = label || {
+    online: 'Online',
+    busy: 'Syncing',
+    queued: 'Queued',
+    offline: 'Offline',
+    failed: 'Failed'
+  }[nextState] || 'Online';
+
+  item.classList.remove('online', 'busy', 'queued', 'offline', 'failed');
+  item.classList.add(nextState);
+  if (text) text.textContent = nextLabel;
+  if (dot) dot.style.animation = nextState === 'busy' ? 'pulse 1.2s infinite' : 'none';
+}
+
 function updateQueueBadge() {
-  return;
+  const queuedCount = offlineOutbox.length;
+  if (queuedCount > 0) {
+    updateSyncStatus('queued', `Queued (${queuedCount})`);
+    return;
+  }
+  updateSyncStatus(navigator.onLine ? 'online' : 'offline', navigator.onLine ? 'Online' : 'Offline');
 }
 
 async function dispatchToBackend(endpoint, payload) {
@@ -238,6 +264,7 @@ async function dispatchToBackend(endpoint, payload) {
   const fullPayload = { ...payload, secretToken: API_CONFIG.secretToken };
   const timeout = withRequestTimeout();
   const compactLoading = endpoint === '/auth/login';
+  updateSyncStatus('busy', endpoint === '/auth/login' ? 'Signing in' : 'Syncing');
   setAppLoadingState(endpoint.includes('/orders/') || endpoint.includes('/customers/') || endpoint.includes('/admin/') ? 'Syncing data...' : 'Saving...', true, compactLoading);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
@@ -260,6 +287,7 @@ async function dispatchToBackend(endpoint, payload) {
       error.status = res.status;
       throw error;
     }
+    updateSyncStatus('online', 'Synced');
     return await res.json();
   } catch (error) {
     if (error?.name === 'AbortError') {
@@ -791,7 +819,13 @@ async function flushOfflineQueue() {
   }
 }
 
-window.addEventListener('online', flushOfflineQueue);
+window.addEventListener('online', () => {
+  updateSyncStatus('busy', 'Syncing');
+  flushOfflineQueue().catch(() => {});
+});
+window.addEventListener('offline', () => {
+  updateSyncStatus('offline', 'Offline');
+});
 
 // 3. Application State & Storage
 const AppState = {
@@ -1115,6 +1149,7 @@ async function executeLogin(e) {
   setButtonLoadingState(loginButton, 'Signing in...', true);
 
   try {
+    updateSyncStatus('busy', 'Signing in');
     const result = await dispatchToBackend('/auth/login', { username: u, password: p });
     AppState.currentUser = result.user;
     AppState.sessionToken = result.sessionToken;
@@ -1127,8 +1162,10 @@ async function executeLogin(e) {
       if (!AppState.admins.some(adminItem => adminItem.adminId === result.user.adminId)) AppState.admins.unshift(AppState.adminProfile);
       AppState.activeAdminScope = null;
     }
+    updateSyncStatus('online', 'Synced');
     showAuthenticatedView();
   } catch (error) {
+    updateSyncStatus('failed', 'Login failed');
     alert(error.message || 'Login failed.');
   } finally {
     setInlineLoadingState('Signing in...', false);

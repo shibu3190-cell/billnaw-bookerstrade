@@ -177,6 +177,52 @@ body {
   padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
+  transition: all 0.15s ease;
+}
+
+.sync-status.online {
+  color: #a7f3d0;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.sync-status.busy {
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.sync-status.offline,
+.sync-status.failed {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.sync-status.queued {
+  color: #c4b5fd;
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.sync-status .sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+}
+
+.sync-status.busy .sync-dot {
+  background: var(--accent-amber);
+  box-shadow: 0 0 8px var(--accent-amber);
+}
+
+.sync-status.offline .sync-dot,
+.sync-status.failed .sync-dot {
+  background: var(--accent-red);
+  box-shadow: 0 0 8px var(--accent-red);
+}
+
+.sync-status.queued .sync-dot {
+  background: #a78bfa;
+  box-shadow: 0 0 8px #a78bfa;
 }
 
 .app-loading-overlay {
@@ -184,11 +230,23 @@ body {
   inset: 0;
   background: rgba(2, 6, 23, 0.72);
   backdrop-filter: blur(6px);
-  display: none !important;
+  display: flex;
   align-items: center;
   justify-content: center;
-  z-index: -1;
-  pointer-events: none;
+  z-index: 200;
+  pointer-events: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.app-loading-overlay:not([hidden]) {
+  opacity: 1;
+  visibility: visible;
+}
+
+.app-loading-overlay[hidden] {
+  display: none !important;
 }
 
 .app-loading-overlay.compact {
@@ -197,7 +255,7 @@ body {
   height: auto;
   background: rgba(2, 6, 23, 0.45);
   border-radius: 14px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(4px);
 }
 
