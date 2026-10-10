@@ -357,6 +357,15 @@ function setButtonLoadingState(button, label, isLoading) {
   button.textContent = isLoading ? label : originalText;
 }
 
+function setInlineLoadingState(message = 'Loading...', isLoading = true) {
+  const loader = document.getElementById('app-inline-loading');
+  const label = loader?.querySelector('.app-inline-text');
+  if (!loader || !label) return;
+  label.textContent = message;
+  loader.hidden = !isLoading;
+  loader.setAttribute('aria-busy', String(isLoading));
+}
+
 function findButtonByAction(actionName, actionArg) {
   if (!actionArg) return null;
   const match = `${actionName}('${actionArg}'`;
@@ -1070,6 +1079,10 @@ async function executeLogin(e) {
   await appStateReady;
   const u = document.getElementById('auth-username').value.trim();
   const p = document.getElementById('auth-password').value.trim();
+  const loginButton = document.getElementById('auth-submit-button');
+
+  setInlineLoadingState('Signing in...', true);
+  setButtonLoadingState(loginButton, 'Signing in...', true);
 
   try {
     const result = await dispatchToBackend('/auth/login', { username: u, password: p });
@@ -1082,13 +1095,15 @@ async function executeLogin(e) {
     if (result.user.isMaster) {
       AppState.adminProfile = { ...AppState.adminProfile, adminId: result.user.adminId, name: result.user.name, active: true };
       if (!AppState.admins.some(adminItem => adminItem.adminId === result.user.adminId)) AppState.admins.unshift(AppState.adminProfile);
+      AppState.activeAdminScope = null;
     }
+    showAuthenticatedView();
   } catch (error) {
     alert(error.message || 'Login failed.');
-    return;
+  } finally {
+    setInlineLoadingState('Signing in...', false);
+    setButtonLoadingState(loginButton, 'Signing in...', false);
   }
-
-  showAuthenticatedView();
 }
 
 function showAuthenticatedView() {
@@ -2011,12 +2026,20 @@ function toggleDeliveryOtherPlatform() {
   input.required = other;
 }
 
-function getNextDirectDeliverySequence(order) {
-  const packages = Array.isArray(order?.deliveryPackages) ? order.deliveryPackages : [];
-  const used = new Set(packages.map(packageEntry => Number(packageEntry.sequence) || 0).filter(Boolean));
-  let next = 1;
-  while (used.has(next)) next += 1;
-  return next;
+function getNextDirectDeliverySequence(orderOrCustomerId, deliveryDate = todayIsoDate()) {
+  const targetDate = String(deliveryDate || todayIsoDate()).slice(0, 10);
+  const customerId = typeof orderOrCustomerId === 'string' ? orderOrCustomerId : orderOrCustomerId?.customerId;
+  const maxSequence = AppState.orders
+    .filter(order => String(order.customerId || '').trim() === String(customerId || '').trim())
+    .flatMap(order => Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [])
+    .map(packageEntry => {
+      const packageDate = String(packageEntry.delivery?.deliveryDate || packageEntry.delivery?.submittedAt || packageEntry.submittedAt || '').slice(0, 10);
+      if (packageDate !== targetDate) return 0;
+      const explicitNumber = Number(String(packageEntry.doNumber || packageEntry.sequence || '').replace(/\D+/g, ''));
+      return Number.isFinite(explicitNumber) ? explicitNumber : 0;
+    })
+    .reduce((max, value) => Math.max(max, value), 0);
+  return maxSequence + 1;
 }
 
 function updateDeliveryPackageProgress() {
@@ -2384,7 +2407,7 @@ async function handleSaveDeliveryWithGst(e) {
 
   if (directDeliveryEntry) {
     if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
-    const sequence = getNextDirectDeliverySequence(order);
+    const sequence = getNextDirectDeliverySequence(order.customerId || customer.id);
     const packageEntry = {
       id: packageId,
       sequence,
