@@ -190,6 +190,16 @@ body {
   z-index: 200;
 }
 
+.app-loading-overlay.compact {
+  inset: auto 16px 16px auto;
+  width: min(220px, calc(100vw - 32px));
+  height: auto;
+  background: rgba(2, 6, 23, 0.45);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(4px);
+}
+
 .app-loading-card {
   background: rgba(15, 23, 42, 0.96);
   border: 1px solid var(--border-subtle);
@@ -203,6 +213,15 @@ body {
   min-width: min(260px, calc(100vw - 32px));
 }
 
+.app-loading-overlay.compact .app-loading-card {
+  min-width: 0;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  flex-direction: row;
+  justify-content: center;
+}
+
 .app-loading-spinner {
   width: 42px;
   height: 42px;
@@ -212,12 +231,23 @@ body {
   animation: spin 0.9s linear infinite;
 }
 
+.app-loading-overlay.compact .app-loading-spinner {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
 .app-loading-text {
   color: var(--text-main);
   font-size: 0.9rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-align: center;
+}
+
+.app-loading-overlay.compact .app-loading-text {
+  font-size: 0.72rem;
+  white-space: nowrap;
 }
 
 @keyframes spin {

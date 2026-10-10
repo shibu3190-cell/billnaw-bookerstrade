@@ -204,7 +204,8 @@ async function dispatchToBackend(endpoint, payload) {
   // Always include secretToken in both header and body payload
   const fullPayload = { ...payload, secretToken: API_CONFIG.secretToken };
   const timeout = withRequestTimeout();
-  setAppLoadingState(endpoint.includes('/orders/') || endpoint.includes('/customers/') || endpoint.includes('/admin/') ? 'Syncing data...' : 'Saving...', true);
+  const compactLoading = endpoint === '/auth/login';
+  setAppLoadingState(endpoint.includes('/orders/') || endpoint.includes('/customers/') || endpoint.includes('/admin/') ? 'Syncing data...' : 'Saving...', true, compactLoading);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
       method: 'POST',
@@ -242,7 +243,8 @@ async function dispatchToBackend(endpoint, payload) {
 
 async function fetchFromBackend(endpoint) {
   const timeout = withRequestTimeout();
-  setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true);
+  const compactLoading = endpoint.includes('/auth/login') || endpoint.includes('/admin/sheets/data?page=1&pageSize=50');
+  setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true, compactLoading);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
       headers: {
@@ -267,14 +269,26 @@ async function fetchFromBackend(endpoint) {
   }
 }
 
-function setAppLoadingState(message = 'Saving...', visible = true) {
+function resetLoadingOverlay() {
+  const overlay = document.getElementById('app-loading-overlay');
+  const text = overlay?.querySelector('.app-loading-text');
+  if (!overlay || !text) return;
+  overlay.classList.remove('compact');
+  text.textContent = '';
+  overlay.hidden = true;
+  overlay.setAttribute('aria-busy', 'false');
+}
+
+function setAppLoadingState(message = 'Saving...', visible = true, compact = false) {
   const overlay = document.getElementById('app-loading-overlay');
   const text = overlay?.querySelector('.app-loading-text');
   if (!overlay || !text) return;
 
+  overlay.classList.toggle('compact', compact);
+
   if (visible) {
     appLoadingRequestCount = Math.max(appLoadingRequestCount + 1, 1);
-    text.textContent = message;
+    text.textContent = message || 'Loading...';
     overlay.hidden = false;
     overlay.setAttribute('aria-busy', 'true');
     return;
@@ -282,13 +296,13 @@ function setAppLoadingState(message = 'Saving...', visible = true) {
 
   appLoadingRequestCount = Math.max(appLoadingRequestCount - 1, 0);
   if (appLoadingRequestCount === 0) {
-    text.textContent = message;
+    text.textContent = '';
     overlay.hidden = true;
     overlay.setAttribute('aria-busy', 'false');
     return;
   }
 
-  text.textContent = message;
+  text.textContent = message || 'Loading...';
   overlay.hidden = false;
   overlay.setAttribute('aria-busy', 'true');
 }
@@ -1034,8 +1048,10 @@ async function logoutApp() {
   appLoadingRequestCount = 0;
   const overlay = document.getElementById('app-loading-overlay');
   if (overlay) {
+    overlay.classList.remove('compact');
     overlay.hidden = true;
     overlay.setAttribute('aria-busy', 'false');
+    overlay.querySelector('.app-loading-text').textContent = '';
   }
   AppState.currentUser = null;
   AppState.sessionToken = '';
@@ -2724,6 +2740,7 @@ function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 // Run Hydration
+resetLoadingOverlay();
 const appStateReady = loadPersistedState();
 appStateReady.then(async () => {
   let savedSession = storageDb ? await readStoredState('session', null) : null;
