@@ -2,12 +2,58 @@
  * DeviceTrade Pro - Production Client Controller & Exporter
  */
 
+const APP_CACHE_VERSION = '2026-10-10-2';
+const APP_GLOBAL_LOADING_DISABLED = true;
+
+function forceOverlayHiddenOnStartup() {
+  const overlay = document.getElementById('app-loading-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('compact');
+  overlay.setAttribute('aria-busy', 'false');
+  overlay.hidden = true;
+  const text = overlay.querySelector('.app-loading-text');
+  if (text) text.textContent = '';
+}
+
+window.addEventListener('DOMContentLoaded', forceOverlayHiddenOnStartup, { once: true });
+window.addEventListener('pageshow', forceOverlayHiddenOnStartup, { once: true });
+
+async function ensureFreshAppCache() {
+  if (!('caches' in window) || !('localStorage' in window)) return;
+
+  const cacheKey = 'dt_app_cache_version';
+  const currentVersion = localStorage.getItem(cacheKey);
+  if (currentVersion === APP_CACHE_VERSION) return;
+
+  try {
+    const names = await caches.keys();
+    await Promise.all(names.map(name => caches.delete(name)));
+    localStorage.setItem(cacheKey, APP_CACHE_VERSION);
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'CACHE_VERSION_UPDATED', version: APP_CACHE_VERSION });
+    }
+  } catch (error) {
+    console.warn('Unable to clear cached app assets:', error);
+    localStorage.setItem(cacheKey, APP_CACHE_VERSION);
+  }
+}
+
+ensureFreshAppCache();
+
+const APP_CAN_USE_PWA = window.location.protocol === 'http:' || window.location.protocol === 'https:' || window.location.protocol === 'localhost:';
+if (APP_CAN_USE_PWA) {
+  const manifestLink = document.createElement('link');
+  manifestLink.rel = 'manifest';
+  manifestLink.href = 'manifest.json';
+  document.head.appendChild(manifestLink);
+}
+
 // 1. PWA Installation Service
 let deferredPwaPrompt = null;
 let hadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
 let waitingServiceWorker = null;
 
-if ('serviceWorker' in navigator) {
+if (APP_CAN_USE_PWA && 'serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (hadServiceWorkerController) window.location.reload();
     hadServiceWorkerController = true;
@@ -270,6 +316,7 @@ async function fetchFromBackend(endpoint) {
 }
 
 function resetLoadingOverlay() {
+  appLoadingRequestCount = 0;
   const overlay = document.getElementById('app-loading-overlay');
   const text = overlay?.querySelector('.app-loading-text');
   if (!overlay || !text) return;
@@ -279,7 +326,14 @@ function resetLoadingOverlay() {
   overlay.setAttribute('aria-busy', 'false');
 }
 
+window.addEventListener('pageshow', resetLoadingOverlay);
+
 function setAppLoadingState(message = 'Saving...', visible = true, compact = false) {
+  if (APP_GLOBAL_LOADING_DISABLED) {
+    resetLoadingOverlay();
+    return;
+  }
+
   const overlay = document.getElementById('app-loading-overlay');
   const text = overlay?.querySelector('.app-loading-text');
   if (!overlay || !text) return;

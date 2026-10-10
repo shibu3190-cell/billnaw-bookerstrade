@@ -4,8 +4,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>DeviceTrade POS - Logistics & Ledger</title>
-  
-  <link rel="manifest" href="manifest.json" />
+
+  <script>
+    (function () {
+      function forceHideOverlay() {
+        try {
+          const overlay = document.getElementById('app-loading-overlay');
+          if (!overlay) return;
+          overlay.setAttribute('aria-busy', 'false');
+          overlay.hidden = true;
+          const text = overlay.querySelector('.app-loading-text');
+          if (text) text.textContent = '';
+        } catch (error) {
+          console.warn('Overlay reset failed before app boot:', error);
+        }
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', forceHideOverlay, { once: true });
+      } else {
+        forceHideOverlay();
+      }
+    })();
+  </script>
+
   <meta name="theme-color" content="#4f46e5" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -13,8 +34,8 @@
   <meta name="apple-mobile-web-app-title" content="DeviceTrade" />
   <link rel="apple-touch-icon" href="icons/icon.svg" />
 
-  <link rel="stylesheet" href="style.css" />
-  <script defer src="app.js"></script>
+  <link rel="stylesheet" href="style.css?v=20261010" />
+  <script defer src="app.js?v=20261010"></script>
 </head>
 <body>
 

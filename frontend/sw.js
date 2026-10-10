@@ -1,4 +1,4 @@
-const CACHE_NAME = 'devicetrade-v18';
+const CACHE_NAME = 'devicetrade-v2026-10-10-2';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -23,6 +23,10 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type === 'CACHE_VERSION_UPDATED') {
+    caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -35,12 +39,38 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (new URL(event.request.url).origin !== self.location.origin) return;
+  const requestUrl = new URL(event.request.url);
+  if (requestUrl.origin !== self.location.origin) return;
+
+  const isAppAsset = /(?:\.js|\.css|\.html|\.json|\.png|\.svg|\.ico|\.webmanifest)$/.test(requestUrl.pathname)
+    || requestUrl.pathname.endsWith('/')
+    || requestUrl.pathname.endsWith('/index.html');
+
+  if (event.request.method !== 'GET') return;
+
+  if (isAppAsset) {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-store' })
+        .then((networkResponse) => {
+          if (networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(async () => {
+          const cachedResponse = await caches.match(event.request);
+          if (cachedResponse) return cachedResponse;
+          throw new Error('Network request failed and no cached response exists.');
+        })
+    );
+    return;
+  }
 
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {
-        if (event.request.method === 'GET' && networkResponse.status === 200) {
+        if (networkResponse.status === 200) {
           const clone = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
@@ -50,7 +80,7 @@ self.addEventListener('fetch', (event) => {
         const cachedResponse = await caches.match(event.request);
         if (cachedResponse) return cachedResponse;
 
-        if (event.request.url.includes('/api/')) {
+        if (requestUrl.pathname.includes('/api/')) {
           return new Response(JSON.stringify({
             success: false,
             message: 'Backend unavailable. Check the server URL and try again.'

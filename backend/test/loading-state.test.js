@@ -119,3 +119,63 @@ test('loading overlay clears stale text after the final request finishes', () =>
   assert.equal(overlay.attributes['aria-busy'], 'false');
   assert.equal(overlay.querySelector('.app-loading-text').textContent, '', 'The stale app loading label should be cleared.');
 });
+
+test('overlay reset clears stale request counters so the loader can recover', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../frontend/app.js'), 'utf8');
+  const start = source.indexOf('function resetLoadingOverlay');
+  const end = source.indexOf('function setAppLoadingState');
+  const functionSource = source.slice(start, end).trim();
+
+  const textNode = { textContent: 'Saving...' };
+  const overlay = {
+    hidden: false,
+    attributes: { 'aria-busy': 'true' },
+    classList: {
+      classes: new Set(),
+      toggle(name, force) {
+        if (force === undefined) {
+          if (this.classes.has(name)) {
+            this.classes.delete(name);
+            return false;
+          }
+          this.classes.add(name);
+          return true;
+        }
+        if (force) this.classes.add(name);
+        else this.classes.delete(name);
+        return force;
+      },
+      remove(name) {
+        this.classes.delete(name);
+      }
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    querySelector(selector) {
+      if (selector === '.app-loading-text') {
+        return textNode;
+      }
+      return null;
+    }
+  };
+
+  const context = {
+    document: {
+      getElementById() {
+        return overlay;
+      }
+    },
+    window: {
+      addEventListener() {}
+    },
+    appLoadingRequestCount: 3
+  };
+
+  vm.runInNewContext(`appLoadingRequestCount = 3; ${functionSource}; resetLoadingOverlay();`, context);
+
+  assert.equal(context.appLoadingRequestCount, 0, 'The stale loader counter should be cleared during a reset.');
+  assert.equal(overlay.hidden, true, 'The overlay should be fully reset and hidden.');
+  assert.equal(overlay.attributes['aria-busy'], 'false');
+  assert.equal(textNode.textContent, '', 'The stale loading label should be cleared.');
+});
