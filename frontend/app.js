@@ -82,6 +82,9 @@ function applyAppUpdate() {
 }
 
 window.addEventListener('beforeinstallprompt', (e) => {
+  if (!e || typeof e.preventDefault !== 'function') return;
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) return;
+  if (typeof e.prompt !== 'function') return;
   e.preventDefault();
   deferredPwaPrompt = e;
   const banner = document.getElementById('pwa-install-banner');
@@ -706,6 +709,49 @@ function resolveMappedCatalogProductName(productName) {
   return { matched: true, productId: String(existingProduct.id), productModel: existingProduct.name };
 }
 
+function normalizeOrderForCloudSync(order) {
+  if (!order || typeof order !== 'object') return order;
+  const productModel = String(order.productModel || '').trim();
+  if (!productModel) return order;
+  const mapped = resolveMappedCatalogProductName(productModel);
+  if (!mapped.matched) return order;
+  return {
+    ...order,
+    productId: mapped.productId || order.productId || '',
+    productModel: mapped.productModel
+  };
+}
+
+function normalizeQueuedSyncItem(item) {
+  if (!item || typeof item !== 'object') return item;
+  if (item.actionType === 'NEW_ORDER' && item.payload?.order) {
+    const normalizedOrder = normalizeOrderForCloudSync(item.payload.order);
+    const mapped = resolveMappedCatalogProductName(String(normalizedOrder.productModel || ''));
+    if (normalizedOrder.productModel && !mapped.matched && !normalizedOrder.productId) {
+      return null;
+    }
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        order: { ...normalizedOrder, ...(mapped.matched ? { productId: mapped.productId, productModel: mapped.productModel } : {}) }
+      }
+    };
+  }
+  if (item.actionType === 'DELIVERY_SUBMITTED' && item.payload?.order) {
+    const normalizedOrder = normalizeOrderForCloudSync(item.payload.order);
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        order: normalizedOrder,
+        ...(normalizedOrder.productId ? { orderId: normalizedOrder.id || item.payload.orderId } : {})
+      }
+    };
+  }
+  return item;
+}
+
 async function triggerAutoCloudSync(actionType, data = {}) {
   await storageReady;
   persistLocalState();
@@ -715,7 +761,17 @@ async function triggerAutoCloudSync(actionType, data = {}) {
 
   if (actionType === "NEW_ORDER") {
     endpoint = '/orders/create';
-    payload = { order: data.order };
+    const sanitized = normalizeOrderForCloudSync(data.order);
+    const resolved = resolveMappedCatalogProductName(String(sanitized?.productModel || ''));
+    if (String(sanitized?.productModel || '').trim() && resolved.matched) {
+      sanitized.productId = resolved.productId;
+      sanitized.productModel = resolved.productModel;
+    }
+    if (String(sanitized?.productModel || '').trim() && !resolved.matched && !sanitized.productId) {
+      console.warn('Skipping invalid queued order payload: custom product must be mapped to a catalog product before sync.');
+      return { status: 'rejected', error: new Error('Select the mapped catalog product instead of submitting its name as a custom product.') };
+    }
+    payload = { order: sanitized };
   } else if (actionType === "DELIVERY_SUBMITTED") {
     endpoint = '/orders/delivery';
     payload = {
@@ -825,12 +881,17 @@ async function flushOfflineQueue() {
     const actorQueue = pending.filter(item => !item.actorKey || item.actorKey === actorKey);
     const completed = new Set();
     for (const item of actorQueue) {
+      const normalizedItem = normalizeQueuedSyncItem(item);
+      if (!normalizedItem) {
+        completed.add(item);
+        continue;
+      }
       try {
-        const result = await dispatchToBackend(item.endpoint, item.payload);
-        if (item.actionType === 'DELIVERY_SUBMITTED') {
-          const orderId = item.payload.orderId;
+        const result = await dispatchToBackend(normalizedItem.endpoint, normalizedItem.payload);
+        if (normalizedItem.actionType === 'DELIVERY_SUBMITTED') {
+          const orderId = normalizedItem.payload.orderId;
           const order = AppState.orders.find(orderItem => orderItem.id === orderId);
-          applyCloudInvoiceResult(order, { ...result, packageId: item.payload.packageEntry?.id });
+          applyCloudInvoiceResult(order, { ...result, packageId: normalizedItem.payload.packageEntry?.id });
         }
         completed.add(item);
       } catch (error) {
