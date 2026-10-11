@@ -789,9 +789,6 @@ function normalizeQueuedSyncItem(item) {
   if (item.actionType === 'NEW_ORDER' && item.payload?.order) {
     const normalizedOrder = normalizeOrderForCloudSync(item.payload.order);
     const mapped = resolveMappedCatalogProductName(String(normalizedOrder.productModel || ''));
-    if (normalizedOrder.productModel && !mapped.matched && !normalizedOrder.productId) {
-      return null;
-    }
     return {
       ...item,
       payload: {
@@ -828,10 +825,6 @@ async function triggerAutoCloudSync(actionType, data = {}) {
     if (String(sanitized?.productModel || '').trim() && resolved.matched) {
       sanitized.productId = resolved.productId;
       sanitized.productModel = resolved.productModel;
-    }
-    if (String(sanitized?.productModel || '').trim() && !resolved.matched && !sanitized.productId) {
-      console.warn('Skipping invalid queued order payload: custom product must be mapped to a catalog product before sync.');
-      return { status: 'rejected', error: new Error('Select the mapped catalog product instead of submitting its name as a custom product.') };
     }
     payload = { order: sanitized };
   } else if (actionType === "DELIVERY_SUBMITTED") {
@@ -1791,6 +1784,7 @@ function renderOrdersTable() {
     if (statusFilter !== 'ALL' && statusFilter !== 'ACTIVE' && o.status !== statusFilter) return false;
     if (search) {
       const match = String(o.id).toLowerCase().includes(search) || 
+                    (o.merchantOrderId && String(o.merchantOrderId).toLowerCase().includes(search)) ||
                     o.productModel.toLowerCase().includes(search) ||
                     o.customerName.toLowerCase().includes(search) ||
                     o.cardLast4.includes(search);
@@ -1815,7 +1809,7 @@ function renderOrdersTable() {
     const deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
     tbody.innerHTML += `
       <tr>
-        <td><strong>${o.id}</strong></td>
+        <td><strong>${o.id}</strong>${o.merchantOrderId ? `<br><small style="color:var(--text-muted); font-size:11px;">Merchant: ${o.merchantOrderId}</small>` : ''}</td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
         <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span>${packageProgressLabel(o) ? `<br><small>${packageProgressLabel(o)}</small>` : ''}</td>
         <td>•••• ${o.cardLast4}</td>
@@ -1876,13 +1870,14 @@ function orderDeliveryEntries(order) {
     packageEntry: true
   }));
   return order.delivery?.submitted ? [{
-    id: '',
+    id: `pkg_${order.id}_1`,
     sequence: 1,
     doNumber: 'DO1',
+    packageTag: deliveryPackageTag(order, { sequence: 1, doNumber: 'DO1', delivery: order.delivery }),
     delivery: order.delivery,
     gstDetails: order.gstDetails,
     status: order.status,
-    packageEntry: false
+    packageEntry: true
   }] : [];
 }
 
@@ -1928,6 +1923,7 @@ function renderDeliveryTable() {
     if (search) {
       return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search)
         || o.productModel.toLowerCase().includes(search) || o.id.toLowerCase().includes(search)
+        || (o.merchantOrderId && String(o.merchantOrderId).toLowerCase().includes(search))
         || item.doNumber.toLowerCase().includes(search);
     }
     return true;
@@ -1951,8 +1947,8 @@ function renderDeliveryTable() {
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
         <td><strong>${o.productModel}</strong>${packageId ? `<br><small>${item.doNumber} of ${o.quantity}</small>` : ''}</td>
-        <td><strong>${o.id}</strong></td>
-        <td>${packageId ? `<strong>${item.doNumber}</strong>` : 'Legacy delivery'}</td>
+        <td><strong>${o.id}</strong>${o.merchantOrderId ? `<br><small style="color:var(--text-muted); font-size:11px;">Merchant: ${o.merchantOrderId}</small>` : ''}</td>
+        <td><strong>${item.doNumber || 'DO1'}</strong></td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
@@ -2367,7 +2363,7 @@ async function openNewOrderModal() {
   await syncCloudData().catch(error => console.warn('Unable to refresh data before booking:', error.message));
   const pSelect = document.getElementById('modal-order-product');
   const availableProducts = getAvailableProductsForCurrentUser();
-  pSelect.innerHTML = `${availableProducts.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice})</option>`).join('')}<option value="Other">Other device</option>`;
+  pSelect.innerHTML = `${availableProducts.map(p => `<option value="${p.id}">${p.name} (₹${p.targetPrice} · Comm ₹${p.commission})</option>`).join('')}<option value="Other">Other / Custom model</option>`;
 
   const cSelect = document.getElementById('modal-order-customer-select');
   if (AppState.currentUser.role === 'admin') {
@@ -2382,7 +2378,9 @@ async function openNewOrderModal() {
     cSelect.innerHTML = `<option value="${AppState.currentUser.customerId}">${AppState.currentUser.name}</option>`;
   }
 
-  document.getElementById('modal-order-id').value = generateOrderId('');
+  const merchantInput = document.getElementById('modal-merchant-order-id');
+  if (merchantInput) merchantInput.value = '';
+  document.getElementById('modal-order-id').value = '';
   document.getElementById('modal-order-card').value = '';
   document.getElementById('modal-order-paid').value = availableProducts[0]?.targetPrice || '';
   document.getElementById('modal-order-quantity').value = '1';
@@ -2437,7 +2435,7 @@ function handleDirectDeliveryProductChange() {
   customModel.style.display = productId === 'Other' ? 'block' : 'none';
   customModel.required = productId === 'Other';
   document.getElementById('direct-delivery-card-amount').value = product ? product.targetPrice : '';
-  document.getElementById('deliv-form-model').value = product?.name || '';
+  document.getElementById('deliv-form-model').value = product ? product.name : (customModel.value || '');
 }
 
 function toggleDeliveryOtherPlatform() {
@@ -2447,12 +2445,30 @@ function toggleDeliveryOtherPlatform() {
   input.required = other;
 }
 
-function getNextDirectDeliverySequence(order) {
-  const packages = dedupeOrderPackages(order, order?.deliveryPackages || []);
-  return packages.reduce((highest, packageEntry) => Math.max(
-    highest,
-    Number(packageEntry.sequence) || Number(String(packageEntry.doNumber || '').match(/^DO(\d+)$/i)?.[1]) || 0
-  ), 0) + 1;
+function getNextDirectDeliverySequence(order, deliveryDate) {
+  const targetDateKey = String(deliveryDate || todayIsoDate()).slice(0, 10);
+  const targetCustomerId = String(order?.customerId || AppState.currentUser?.customerId || '').trim();
+  let highest = 0;
+
+  (AppState.orders || []).forEach(o => {
+    if (targetCustomerId && String(o.customerId || '').trim() !== targetCustomerId) return;
+    const pkgs = dedupeOrderPackages(o, o.deliveryPackages || []);
+    pkgs.forEach(pkg => {
+      const pkgDate = String(pkg.delivery?.deliveryDate || pkg.delivery?.submittedAt || pkg.submittedAt || o.createdAt || '').slice(0, 10);
+      if (pkgDate === targetDateKey) {
+        const seq = Number(pkg.sequence) || Number(String(pkg.doNumber || '').match(/^DO(\d+)$/i)?.[1]) || 0;
+        if (seq > highest) highest = seq;
+      }
+    });
+  });
+
+  const orderPkgs = dedupeOrderPackages(order, order?.deliveryPackages || []);
+  orderPkgs.forEach(pkg => {
+    const seq = Number(pkg.sequence) || Number(String(pkg.doNumber || '').match(/^DO(\d+)$/i)?.[1]) || 0;
+    if (seq > highest) highest = seq;
+  });
+
+  return highest + 1;
 }
 
 function updateDeliveryPackageProgress() {
@@ -2518,10 +2534,12 @@ function openDirectDeliveryEntry() {
   directDeliveryPackageIndex = 0;
   setDirectDeliveryFieldsActive(true);
   document.getElementById('deliv-form-order-id').value = '';
+  const delivMerchantInput = document.getElementById('deliv-merchant-order-id');
+  if (delivMerchantInput) delivMerchantInput.value = '';
   document.getElementById('deliv-order-id-input').value = '';
   const productSelect = document.getElementById('direct-delivery-product');
   const availableProducts = getAvailableProductsForCurrentUser();
-  productSelect.innerHTML = `${availableProducts.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}<option value="Other">Custom model</option>`;
+  productSelect.innerHTML = `${availableProducts.map(product => `<option value="${product.id}">${product.name} (₹${product.targetPrice} · Comm ₹${product.commission})</option>`).join('')}<option value="Other">Other / Custom model</option>`;
   const ownerSelect = document.getElementById('direct-delivery-owner');
   const ownerField = document.getElementById('direct-delivery-owner-field');
   if (AppState.currentUser.role === 'admin') {
@@ -2565,6 +2583,8 @@ function continueDirectDeliveryEntry(orderId) {
   openDirectDeliveryEntry();
   directDeliveryPackageIndex = savedPackages.length;
   document.getElementById('deliv-form-order-id').value = order.id;
+  const delivMerchantInput = document.getElementById('deliv-merchant-order-id');
+  if (delivMerchantInput) delivMerchantInput.value = order.merchantOrderId || '';
   document.getElementById('deliv-order-id-input').value = order.id;
   document.getElementById('deliv-form-model').value = order.productModel;
   const product = AppState.products.find(item => item.name === order.productModel);
@@ -2598,17 +2618,13 @@ function handleCreateBooking(e) {
   const requestedProductName = productSelect.value === 'Other' ? (customInput?.value || '').trim() : '';
   const mapped = requestedProductName ? resolveMappedCatalogProductName(requestedProductName) : null;
   const pid = mapped?.matched ? mapped.productId : productSelect.value;
-  const prod = AppState.productIndexById.get(String(pid || '').toLowerCase()) || AppState.products.find(p => p.id === pid);
+  let prod = AppState.productIndexById.get(String(pid || '').toLowerCase()) || AppState.products.find(p => p.id === pid);
 
-  if (productSelect.value === 'Other' && requestedProductName) {
-    if (mapped?.matched) {
-      productSelect.value = mapped.productId;
-      customInput.value = mapped.productModel;
-      document.getElementById('modal-order-paid').value = (AppState.productIndexById.get(String(mapped.productId || '').toLowerCase()) || AppState.products.find(item => item.id === mapped.productId))?.targetPrice || '';
-    } else {
-      alert('This product is not in your catalog. Only active products in your Admin catalog can be selected. Please select an existing catalog product or add it in Settings.');
-      return;
-    }
+  if (productSelect.value === 'Other' && requestedProductName && mapped?.matched) {
+    productSelect.value = mapped.productId;
+    customInput.value = mapped.productModel;
+    document.getElementById('modal-order-paid').value = (AppState.productIndexById.get(String(mapped.productId || '').toLowerCase()) || AppState.products.find(item => item.id === mapped.productId))?.targetPrice || '';
+    prod = AppState.productIndexById.get(String(mapped.productId || '').toLowerCase()) || AppState.products.find(p => p.id === mapped.productId);
   }
 
   if (productSelect.value !== 'Other' && (!prod || !getAvailableProductsForCurrentUser().some(product => product.id === pid))) {
@@ -2632,10 +2648,12 @@ function handleCreateBooking(e) {
   const adv = Number(document.getElementById('modal-order-advance').value) || 0;
   const comm = prod ? prod.commission : 1000;
 
+  const merchantOrderId = document.getElementById('modal-merchant-order-id')?.value?.trim() || '';
   const newOrderId = generateOrderId(document.getElementById('modal-order-id').value.trim());
   document.getElementById('modal-order-id').value = newOrderId;
   const newOrder = {
     id: newOrderId,
+    merchantOrderId,
     productId: prod?.id || '',
     platform: document.getElementById('modal-order-platform').value === 'Other'
       ? document.getElementById('modal-order-platform-other').value.trim()
@@ -2680,6 +2698,8 @@ function openDeliveryModalForOrder(orderId) {
   document.getElementById('deliv-form-platform').disabled = false;
   document.getElementById('deliv-form-platform-other').disabled = false;
   document.getElementById('deliv-form-order-id').value = o.id;
+  const delivMerchantInput = document.getElementById('deliv-merchant-order-id');
+  if (delivMerchantInput) delivMerchantInput.value = o.merchantOrderId || '';
   document.getElementById('deliv-order-id-input').value = o.id;
   document.getElementById('deliv-form-model').value = o.productModel;
   document.getElementById('deliv-form-platform').value = o.platform || 'Flipkart';
@@ -2737,6 +2757,7 @@ function recalcGstTotal() {
 async function handleSaveDeliveryWithGst(e) {
   e.preventDefault();
   const visibleOrderIdInput = document.getElementById('deliv-order-id-input');
+  const merchantOrderId = document.getElementById('deliv-merchant-order-id')?.value?.trim() || '';
   const orderId = generateOrderId(visibleOrderIdInput?.value || document.getElementById('deliv-form-order-id').value);
   if (visibleOrderIdInput) visibleOrderIdInput.value = orderId;
   document.getElementById('deliv-form-order-id').value = orderId;
@@ -2752,17 +2773,16 @@ async function handleSaveDeliveryWithGst(e) {
     const selectedProductId = document.getElementById('direct-delivery-product').value;
     let product = AppState.products.find(item => item.id === selectedProductId);
     let productModel = selectedProductId === 'Other'
-      ? document.getElementById('direct-delivery-custom-model').value.trim()
+      ? (document.getElementById('direct-delivery-custom-model').value.trim() || 'Custom Device')
       : product?.name;
+    let commission = product ? (Number(product.commission) || 0) : 1000;
     if (selectedProductId === 'Other') {
       const mapped = resolveMappedCatalogProductName(productModel);
       if (mapped.matched) {
         document.getElementById('direct-delivery-product').value = mapped.productId;
         product = AppState.products.find(item => item.id === mapped.productId) || product;
         productModel = mapped.productModel;
-      } else {
-        alert('This product is not in your catalog. Only active products in your Admin catalog can be selected. Please select an existing catalog product or add it in Settings.');
-        return;
+        commission = Number(product?.commission) || 1000;
       }
     }
     const amountPaid = Number(document.getElementById('direct-delivery-card-amount').value);
@@ -2775,10 +2795,11 @@ async function handleSaveDeliveryWithGst(e) {
         ? { id: `ADMIN-SELF-${AppState.currentUser.adminId}`, name: `${AppState.currentUser.name} (Admin)` }
         : AppState.customers.find(item => item.id === ownerId);
     if (!customer) return alert('Choose a valid booker account.');
-    const commission = Number(product?.commission) || 0;
     const uniqueOrderId = generateOrderId(orderId);
     order = {
       id: uniqueOrderId,
+      merchantOrderId,
+      productId: product?.id || '',
       platform: document.getElementById('deliv-form-platform').value === 'Other'
         ? document.getElementById('deliv-form-platform-other').value.trim()
         : document.getElementById('deliv-form-platform').value,
@@ -2813,6 +2834,9 @@ async function handleSaveDeliveryWithGst(e) {
     }
   }
   if (!order) return;
+  if (merchantOrderId && !order.merchantOrderId) {
+    order.merchantOrderId = merchantOrderId;
+  }
 
   const totalPackages = directDeliveryEntry ? Math.max(1, Number(document.getElementById('direct-delivery-quantity').value) || 1) : 1;
   const packageId = directDeliveryEntry ? (window.crypto?.randomUUID?.() || `pkg_${Date.now()}_${Math.random().toString(36).slice(2)}`) : '';
@@ -2859,7 +2883,7 @@ async function handleSaveDeliveryWithGst(e) {
 
   if (directDeliveryEntry) {
     if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
-    const sequence = getNextDirectDeliverySequence(order);
+    const sequence = getNextDirectDeliverySequence(order, delivery.deliveryDate);
     const packageEntry = {
       id: packageId,
       sequence,
@@ -2907,12 +2931,26 @@ async function handleSaveDeliveryWithGst(e) {
       return;
     }
   } else {
+    const sequence = getNextDirectDeliverySequence(order, delivery.deliveryDate);
+    const standardPackageId = `pkg_${order.id}_1`;
+    const standardPackageEntry = {
+      id: standardPackageId,
+      sequence,
+      doNumber: `DO${sequence}`,
+      packageTag: deliveryPackageTag(order, { sequence, doNumber: `DO${sequence}`, delivery, submittedAt: new Date().toISOString() }),
+      delivery,
+      gstDetails,
+      status: order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
+      submittedAt: new Date().toISOString()
+    };
+    order.deliveryPackages = [standardPackageEntry];
     order.status = order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery';
     order.delivery = delivery;
     order.gstDetails = gstDetails;
+    await rememberDeliveryContact(delivery);
     persistLocalState();
     renderAllViews();
-    triggerAutoCloudSync('DELIVERY_SUBMITTED', { order });
+    triggerAutoCloudSync('DELIVERY_SUBMITTED', { order, packageEntry: standardPackageEntry });
   }
     directDeliveryEntry = false;
     closeModal('modal-delivery-submission');

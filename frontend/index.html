@@ -555,20 +555,27 @@
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Merchant Order ID</label>
-            <input type="text" id="modal-order-id" class="form-input" placeholder="e.g. OD4029102931" required />
+            <label class="form-label">Merchant Order ID (optional)</label>
+            <input type="text" id="modal-merchant-order-id" class="form-input" placeholder="e.g. OD4029102931" />
           </div>
           <div class="form-field">
-            <label class="form-label">Card Last 4 Digits</label>
-            <input type="text" id="modal-order-card" class="form-input" maxlength="4" placeholder="e.g. 7632" required />
+            <label class="form-label">System Order ID (optional override)</label>
+            <input type="text" id="modal-order-id" class="form-input" placeholder="Leave blank to auto-generate" />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
+            <label class="form-label">Card Last 4 Digits</label>
+            <input type="text" id="modal-order-card" class="form-input" maxlength="4" placeholder="e.g. 7632" required />
+          </div>
+          <div class="form-field">
             <label class="form-label">Amount Paid On Card (₹)</label>
             <input type="number" id="modal-order-paid" class="form-input" required />
           </div>
+        </div>
+
+        <div class="form-grid two-col">
           <div class="form-field">
             <label class="form-label">Quantity</label>
             <input type="number" id="modal-order-quantity" class="form-input" min="1" step="1" value="1" required />
@@ -598,16 +605,22 @@
       </div>
       <form onsubmit="handleSaveDeliveryWithGst(event)">
         <input type="hidden" id="deliv-form-order-id" />
-        <div class="form-field" style="margin-bottom:12px;">
-          <label class="form-label" for="deliv-order-id-input">Order ID (optional)</label>
-          <input type="text" id="deliv-order-id-input" class="form-input" placeholder="Leave blank to auto-generate" />
+        <div class="form-grid two-col" style="margin-bottom:12px;">
+          <div class="form-field">
+            <label class="form-label" for="deliv-merchant-order-id">Merchant Order ID (optional)</label>
+            <input type="text" id="deliv-merchant-order-id" class="form-input" placeholder="e.g. OD4029102931" />
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="deliv-order-id-input">System Order ID (optional)</label>
+            <input type="text" id="deliv-order-id-input" class="form-input" placeholder="Leave blank to auto-generate" />
+          </div>
         </div>
         <div id="direct-delivery-fields" class="direct-delivery-fields" hidden>
           <div class="form-grid two-col">
             <div class="form-field">
-              <label class="form-label" for="direct-delivery-product">Saved product or custom model</label>
+              <label class="form-label" for="direct-delivery-product">Product Model</label>
               <select id="direct-delivery-product" class="form-select" onchange="handleDirectDeliveryProductChange()"></select>
-              <input type="text" id="direct-delivery-custom-model" class="form-input" placeholder="Enter product model" style="display:none; margin-top:6px;" />
+              <input type="text" id="direct-delivery-custom-model" class="form-input" placeholder="Enter product model" style="display:none; margin-top:6px;" oninput="document.getElementById('deliv-form-model').value = this.value" />
             </div>
             <div class="form-field">
               <label class="form-label" for="direct-delivery-card-amount">Amount paid on card (₹)</label>

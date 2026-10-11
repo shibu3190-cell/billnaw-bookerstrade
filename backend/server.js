@@ -670,7 +670,8 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
     if (!order || typeof order !== 'object' || !order.id) {
       return res.status(400).json({ success: false, message: 'A valid order with an id is required.' });
     }
-    if (!actor || (actor.role === 'admin' && !actor.isMaster && !sameOwner(order.adminId, actor.adminId)) || (actor.role === 'customer' && String(order.customerId || '').trim() !== String(actor.customerId || '').trim())) {
+    order.merchantOrderId = String(order.merchantOrderId || '').trim();
+    if (!actor || (actor.role === 'admin' && !actor.isMaster && !sameOwner(order.adminId, actor.adminId)) || (actor.role === 'customer' && !sameOwner(order.customerId, actor.customerId))) {
       return res.status(403).json({ success: false, message: 'You can only create bookings for your own account.' });
     }
     if (actor.role === 'customer') {
@@ -760,22 +761,23 @@ app.post('/api/orders/create', authenticate, requireSession, async (req, res) =>
 async function upsertOrderSheetRow(order) {
   await ensureSheetTab('Orders', [
     'Order ID', 'Platform', 'Product Model', 'Quantity', 'Customer Name', 'Customer ID',
-    'Card Last 4', 'Amount Paid', 'Payable Due', 'Advance Paid', 'Status', 'Date', 'Admin ID', 'Product ID'
+    'Card Last 4', 'Amount Paid', 'Payable Due', 'Advance Paid', 'Status', 'Date', 'Admin ID', 'Product ID', 'Merchant Order ID'
   ]);
-  const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:N' });
-  if (sheetData.data.values?.[0]?.length < 14) {
-    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!N1', valueInputOption: 'USER_ENTERED', resource: { values: [['Product ID']] } });
+  const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:O' });
+  if (sheetData.data.values?.[0]?.length < 15) {
+    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!O1', valueInputOption: 'USER_ENTERED', resource: { values: [['Merchant Order ID']] } });
   }
   const rowIndex = (sheetData.data.values || []).findIndex(row => row[0] === order.id);
   const values = [[
     order.id, order.platform, order.productModel, order.quantity || 1, order.customerName,
     order.customerId, order.cardLast4, order.amountPaid, order.payableAmount,
-    order.advancePaid || 0, order.status, order.createdAt, order.adminId || '', order.productId || ''
+    order.advancePaid || 0, order.status, order.createdAt, order.adminId || '', order.productId || '',
+    order.merchantOrderId || ''
   ]];
   if (rowIndex > 0) {
-    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!A${rowIndex + 1}:N${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values } });
+    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Orders!A${rowIndex + 1}:O${rowIndex + 1}`, valueInputOption: 'USER_ENTERED', resource: { values } });
   } else {
-    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:N', valueInputOption: 'USER_ENTERED', resource: { values } });
+    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:O', valueInputOption: 'USER_ENTERED', resource: { values } });
   }
 }
 
@@ -797,137 +799,124 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       : sameOwner(existingOrder.customerId, actor.customerId));
     if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only edit your own booking.' });
 
-    if (packageEntry) {
-      const packageId = String(packageEntry.id || '').trim();
-      if (!packageId || !packageEntry.delivery || typeof packageEntry.delivery !== 'object') {
-        return res.status(400).json({ success: false, message: 'A package id and delivery details are required.' });
-      }
-      const uploaded = await uploadInvoiceFile(packageEntry.gstDetails, orderId, true, { adminId: existingOrder.adminId, customerId: existingOrder.customerId });
-      let persistedPackage = {
-        id: packageId,
-        delivery: packageEntry.delivery,
-        gstDetails: uploaded.gstDetails ? {
-          ...uploaded.gstDetails,
-          adminId: existingOrder.adminId || '',
-          customerId: existingOrder.customerId || '',
-          orderId,
-          packageId
-        } : null,
-        status: existingOrder.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
-        submittedAt: packageEntry.submittedAt || new Date().toISOString()
-      };
+    const activeDelivery = packageEntry?.delivery || delivery;
+    const activeGstDetails = packageEntry?.gstDetails || gstDetails;
+    const packageId = String(packageEntry?.id || '').trim() || (existingOrder.deliveryPackages?.length === 0 ? `pkg_${orderId}_1` : `pkg_${crypto.randomUUID()}`);
+    if (!activeDelivery || typeof activeDelivery !== 'object') {
+      return res.status(400).json({ success: false, message: 'Delivery details are required.' });
+    }
 
-      await db.runTransaction(async transaction => {
-        const freshSnapshot = await transaction.get(orderRef);
-        if (!freshSnapshot.exists) throw new Error('Booking not found.');
-        const current = freshSnapshot.data();
-        const packages = dedupeDeliveryPackages(current.deliveryPackages, { orderId, customerId: current.customerId });
-        const identity = allocateDeliveryPackageIdentity(packages, packageId, current.quantity, {
-          orderId,
-          customerId: current.customerId
+    const uploaded = await uploadInvoiceFile(activeGstDetails, orderId, true, { adminId: existingOrder.adminId, customerId: existingOrder.customerId });
+    let persistedPackage = {
+      id: packageId,
+      delivery: activeDelivery,
+      gstDetails: uploaded.gstDetails ? {
+        ...uploaded.gstDetails,
+        adminId: existingOrder.adminId || '',
+        customerId: existingOrder.customerId || '',
+        orderId,
+        packageId
+      } : null,
+      status: existingOrder.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
+      submittedAt: packageEntry?.submittedAt || new Date().toISOString()
+    };
+
+    const deliveryDateKey = String(activeDelivery.deliveryDate || activeDelivery.submittedAt || new Date().toISOString()).slice(0, 10);
+    const existingBookerDayPackages = [];
+    try {
+      const bookerOrdersSnapshot = await db.collection('orders').where('customerId', '==', existingOrder.customerId).get();
+      bookerOrdersSnapshot.docs.forEach(doc => {
+        const o = doc.data();
+        (o.deliveryPackages || []).forEach(pkg => {
+          const pkgDate = String(pkg.delivery?.deliveryDate || pkg.delivery?.submittedAt || pkg.submittedAt || o.createdAt || '').slice(0, 10);
+          if (pkgDate === deliveryDateKey) {
+            existingBookerDayPackages.push(pkg);
+          }
         });
-        persistedPackage.sequence = identity.sequence;
-        persistedPackage.doNumber = identity.doNumber;
-        persistedPackage.packageTag = buildDeliveryPackageTag({
-          customerId: current.customerId,
-          deliveryDate: persistedPackage.delivery?.deliveryDate || persistedPackage.submittedAt,
-          orderId,
-          sequence: identity.sequence,
-          doNumber: identity.doNumber
-        });
-        if (identity.existingIndex >= 0) packages[identity.existingIndex] = persistedPackage;
-        else packages.push(persistedPackage);
-        const patch = {
-          deliveryPackages: packages,
-          status: current.status === 'Pending Approval' ? current.status : 'Out for Delivery',
-          isToday: current.status !== 'Pending Approval'
-        };
-        if (!current.delivery) {
-          patch.delivery = persistedPackage.delivery;
-          patch.gstDetails = persistedPackage.gstDetails;
-        }
-        transaction.update(orderRef, patch);
       });
-
-      await ensureSheetTab('Delivery_Packages', [
-        'Package ID', 'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
-        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status', 'Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag'
-      ]);
-      const existingHeaders = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1' }).catch(() => ({ data: { values: [] } }));
-      const headers = existingHeaders.data.values?.[0] || [];
-      if (headers[0] !== 'Delivery No' || headers[1] !== 'Sequence' || headers[2] !== 'Delivery Date' || headers[3] !== 'Delivery Tag') {
-        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1', valueInputOption: 'RAW', resource: { values: [['Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag']] } });
-      }
-      const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' });
-      const packageRow = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
-      const packageValues = [[
-        packageId, orderId, platform || persistedPackage.delivery.platform, model || existingOrder.productModel,
-        persistedPackage.delivery.recipientName, persistedPackage.delivery.mobile, persistedPackage.delivery.tracking,
-        persistedPackage.delivery.otp, persistedPackage.delivery.pincode,
-        persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
-        persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
-        persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status,
-        persistedPackage.doNumber, persistedPackage.sequence, persistedPackage.delivery.deliveryDate || '', persistedPackage.packageTag
-      ]];
-      if (packageRow > 0) {
-        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:T${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
-      } else {
-        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:T', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
-      }
-      return res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, packageTag: persistedPackage.packageTag, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
+    } catch (queryErr) {
+      console.warn('Could not query booker day packages for DO sequence:', queryErr.message);
     }
 
-    const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId, false, { adminId: existingOrder.adminId, customerId: existingOrder.customerId });
-    const persistedGstDetails = uploadedInvoice.gstDetails?.fileData === ''
-      ? uploadedInvoice.gstDetails
-      : (uploadedInvoice.gstDetails || null);
-    if (persistedGstDetails) {
-      persistedGstDetails.adminId = existingOrder.adminId || '';
-      persistedGstDetails.customerId = existingOrder.customerId || '';
-      persistedGstDetails.orderId = orderId;
-    }
-
-    const targetStatus = existingOrder.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery';
-    await tryFirestore(
-      () => orderRef.update({
-        delivery,
-        gstDetails: persistedGstDetails,
-        status: targetStatus,
-        isToday: existingOrder.status !== 'Pending Approval'
-      }),
-      `update delivery ${orderId}`
-    );
-
-    const previousFileId = existingOrder.gstDetails?.fileId;
-    const replacementFileId = persistedGstDetails?.fileId;
-    if (previousFileId && replacementFileId && previousFileId !== replacementFileId) {
-      await db.collection('invoiceFiles').doc(previousFileId).delete().catch(() => {});
-      if (existingOrder.gstDetails.storagePath) {
-        await storageBucket.file(existingOrder.gstDetails.storagePath).delete({ ignoreNotFound: true }).catch(() => {});
+    await db.runTransaction(async transaction => {
+      const freshSnapshot = await transaction.get(orderRef);
+      if (!freshSnapshot.exists) throw new Error('Booking not found.');
+      const current = freshSnapshot.data();
+      const packages = dedupeDeliveryPackages(current.deliveryPackages, { orderId, customerId: current.customerId });
+      const identity = allocateDeliveryPackageIdentity(packages, packageId, current.quantity, {
+        orderId,
+        customerId: current.customerId,
+        existingBookerDayPackages
+      });
+      persistedPackage.sequence = identity.sequence;
+      persistedPackage.doNumber = identity.doNumber;
+      persistedPackage.packageTag = buildDeliveryPackageTag({
+        customerId: current.customerId,
+        deliveryDate: persistedPackage.delivery?.deliveryDate || persistedPackage.submittedAt,
+        orderId,
+        sequence: identity.sequence,
+        doNumber: identity.doNumber
+      });
+      if (identity.existingIndex >= 0) packages[identity.existingIndex] = persistedPackage;
+      else packages.push(persistedPackage);
+      const patch = {
+        deliveryPackages: packages,
+        status: current.status === 'Pending Approval' ? current.status : 'Out for Delivery',
+        isToday: current.status !== 'Pending Approval'
+      };
+      if (!current.delivery) {
+        patch.delivery = persistedPackage.delivery;
+        patch.gstDetails = persistedPackage.gstDetails;
       }
+      transaction.update(orderRef, patch);
+    });
+
+    await ensureSheetTab('Delivery_Packages', [
+      'Package ID', 'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
+      'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status', 'Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag'
+    ]);
+    const existingHeaders = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1' }).catch(() => ({ data: { values: [] } }));
+    const headers = existingHeaders.data.values?.[0] || [];
+    if (headers[0] !== 'Delivery No' || headers[1] !== 'Sequence' || headers[2] !== 'Delivery Date' || headers[3] !== 'Delivery Tag') {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1', valueInputOption: 'RAW', resource: { values: [['Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag']] } });
+    }
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' });
+    const packageRow = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
+    const packageValues = [[
+      packageId, orderId, platform || persistedPackage.delivery.platform, model || existingOrder.productModel,
+      persistedPackage.delivery.recipientName, persistedPackage.delivery.mobile, persistedPackage.delivery.tracking,
+      persistedPackage.delivery.otp, persistedPackage.delivery.pincode,
+      persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
+      persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
+      persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status,
+      persistedPackage.doNumber, persistedPackage.sequence, persistedPackage.delivery.deliveryDate || '', persistedPackage.packageTag
+    ]];
+    if (packageRow > 0) {
+      await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:T${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+    } else {
+      await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:T', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
     }
 
     await ensureSheetTab('Deliveries_OTP', [
       'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
       'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp'
     ]);
-
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range: 'Deliveries_OTP!A:N',
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: [[
-          orderId, platform, model, delivery.recipientName,
-          delivery.mobile, delivery.tracking, delivery.otp, delivery.pincode,
-          persistedGstDetails?.gstNumber || 'N/A', persistedGstDetails?.shopName || 'N/A',
-          persistedGstDetails?.baseAmount || 0, persistedGstDetails?.gstAmount || 0,
-          persistedGstDetails?.totalAmount || 0, new Date().toISOString()
+          orderId, platform || persistedPackage.delivery.platform, model || existingOrder.productModel, persistedPackage.delivery.recipientName,
+          persistedPackage.delivery.mobile, persistedPackage.delivery.tracking, persistedPackage.delivery.otp, persistedPackage.delivery.pincode,
+          persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
+          persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
+          persistedPackage.gstDetails?.totalAmount || 0, new Date().toISOString()
         ]]
       }
     });
 
-    res.json({ success: true, file: persistedGstDetails?.fileId ? persistedGstDetails : null, deletedFileIds: uploadedInvoice.deletedFileIds });
+    res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, packageTag: persistedPackage.packageTag, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
   } catch (err) {
     const status = err.status || 500;
     res.status(status).json({ error: err.message });

@@ -376,4 +376,84 @@ test('Complete Admin and Booker multi-role pipeline and isolation', async t => {
   const selfOrderDoc = (await db.collection('orders').doc(selfOrderId).get()).data();
   assert.equal(selfOrderDoc.status, 'Settled');
   assert.equal(selfOrderDoc.settledAmount, 1650);
+
+  // 9. Distinct Merchant Order ID vs System Order ID
+  const orderWithMerchantId = 'pipeline-sys-order-02';
+  const externalMerchantId = 'FK-OD4029102931';
+  await call('/orders/create', {
+    body: {
+      order: {
+        id: orderWithMerchantId,
+        merchantOrderId: externalMerchantId,
+        productId: 'test-admin1-prod',
+        productModel: 'Admin 1 Exclusive Product',
+        customerId: credentials.booker.id,
+        customerName: 'Test Booker',
+        adminId: credentials.admin.id,
+        amountPaid: 2000,
+        payableAmount: 2150,
+        quantity: 1,
+        status: 'Booked'
+      }
+    },
+    sessionToken: admin1Session
+  });
+
+  const order2Doc = (await db.collection('orders').doc(orderWithMerchantId).get()).data();
+  assert.equal(order2Doc.id, orderWithMerchantId);
+  assert.equal(order2Doc.merchantOrderId, externalMerchantId);
+
+  // 10. Multi-Order Continuous Day-Wise DO Number
+  // Booker 1 already submitted DO1 and DO2 on their first order today (2026-10-11).
+  // Now submit delivery for Booker 1's second order today:
+  const order2Delivery = {
+    platform: 'Flipkart',
+    recipientName: 'Recipient Three',
+    mobile: '9876543212',
+    tracking: 'TRK-003',
+    otp: '9999',
+    pincode: '560003',
+    submitted: true,
+    deliveryDate: '2026-10-11'
+  };
+
+  const pkg3Res = await call('/orders/delivery', {
+    body: {
+      orderId: orderWithMerchantId,
+      delivery: order2Delivery,
+      packageEntry: {
+        id: 'pkg-pipeline-order2-1',
+        delivery: order2Delivery,
+        submittedAt: '2026-10-11T15:00:00.000Z'
+      }
+    },
+    sessionToken: bookerSession
+  });
+
+  assert.equal(pkg3Res.doNumber, 'DO3', 'Expected DO3 for Booker 1 on their second order of the same day');
+
+  // 11. Freeform Custom Device ("Other") Booking & Delivery
+  const customDeviceOrderId = 'pipeline-custom-device-01';
+  await call('/orders/create', {
+    body: {
+      order: {
+        id: customDeviceOrderId,
+        productId: '',
+        productModel: 'Custom Handset Pro 5G',
+        customerId: credentials.booker.id,
+        customerName: 'Test Booker',
+        adminId: credentials.admin.id,
+        amountPaid: 3000,
+        payableAmount: 4000,
+        profit: 1000,
+        quantity: 1,
+        status: 'Booked'
+      }
+    },
+    sessionToken: admin1Session
+  });
+
+  const customOrderDoc = (await db.collection('orders').doc(customDeviceOrderId).get()).data();
+  assert.equal(customOrderDoc.productModel, 'Custom Handset Pro 5G');
+  assert.equal(customOrderDoc.productId, '');
 });

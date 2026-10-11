@@ -86,3 +86,29 @@ test('rejects a new parcel once the order quantity is reached', () => {
     message: 'All packages for this order already have delivery details.'
   });
 });
+
+test('allocates continuous daily DO sequence per booker across multiple orders on the same day', () => {
+  const existingBookerDayPackages = [
+    { id: 'pkg-1', sequence: 1, doNumber: 'DO1', customerId: 'cust-1' },
+    { id: 'pkg-2', sequence: 2, doNumber: 'DO2', customerId: 'cust-1' }
+  ];
+  // Booker 1 creates a parcel on their second order today:
+  const newOrderPackages = [];
+  const identity = allocateDeliveryPackageIdentity(newOrderPackages, 'pkg-3', 1, {
+    orderId: 'OD-NEW',
+    customerId: 'cust-1',
+    existingBookerDayPackages
+  });
+  assert.equal(identity.sequence, 3);
+  assert.equal(identity.doNumber, 'DO3');
+
+  // Meanwhile Booker 2 starting today gets DO1:
+  const booker2Packages = [];
+  const identity2 = allocateDeliveryPackageIdentity(booker2Packages, 'pkg-b2-1', 1, {
+    orderId: 'OD-B2',
+    customerId: 'cust-2',
+    existingBookerDayPackages: []
+  });
+  assert.equal(identity2.sequence, 1);
+  assert.equal(identity2.doNumber, 'DO1');
+});

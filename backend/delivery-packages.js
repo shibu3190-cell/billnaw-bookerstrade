@@ -58,7 +58,10 @@ function allocateDeliveryPackageIdentity(packages, packageId, quantity, context)
     throw error;
   }
 
-  const sequence = currentPackages.reduce((highest, packageEntry) => Math.max(highest, packageSequence(packageEntry)), 0) + 1;
+  const highestBookerDaySequence = (Array.isArray(context?.existingBookerDayPackages) ? context.existingBookerDayPackages : [])
+    .reduce((highest, packageEntry) => Math.max(highest, packageSequence(packageEntry)), 0);
+  const highestOrderSequence = currentPackages.reduce((highest, packageEntry) => Math.max(highest, packageSequence(packageEntry)), 0);
+  const sequence = Math.max(highestBookerDaySequence, highestOrderSequence) + 1;
   return { sequence, doNumber: `DO${sequence}`, existingIndex: -1 };
 }
 
