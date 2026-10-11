@@ -1135,20 +1135,40 @@ function normalizeOrder(order) {
     recipientName: String(order.delivery.recipientName || ''),
     deliveryDate: order.delivery.deliveryDate || order.delivery.submittedAt || order.createdAt || todayIsoDate()
   } : null;
+
+  const quantity = Math.max(1, Number(order.quantity) || 1);
+  let amountPaid = csvOrNumber(order.amountPaid);
+  const payableAmount = csvOrNumber(order.payableAmount);
+  const profit = csvOrNumber(order.profit);
+
+  // If amountPaid was stored as unit card price (e.g. 10,000 for quantity 2 with payable 20,200),
+  // upgrade amountPaid to total order card amount: amountPaid * quantity
+  let unitPrice = csvOrNumber(order.unitPrice);
+  if (quantity > 1 && amountPaid > 0 && Math.round(amountPaid * quantity + profit) === Math.round(payableAmount)) {
+    unitPrice = amountPaid;
+    amountPaid = amountPaid * quantity;
+  } else if (quantity > 1 && unitPrice <= 0 && amountPaid > 0) {
+    unitPrice = Math.round(amountPaid / quantity);
+  } else if (quantity === 1) {
+    unitPrice = amountPaid;
+  }
+
   return {
     ...order,
     id: String(order.id || ''),
+    merchantOrderId: String(order.merchantOrderId || ''),
     customerId: String(order.customerId || ''),
     customerName: String(order.customerName || ''),
     productModel: String(order.productModel || ''),
     cardLast4: String(order.cardLast4 || ''),
     platform: String(order.platform || 'Other'),
-    amountPaid: csvOrNumber(order.amountPaid),
-    payableAmount: csvOrNumber(order.payableAmount),
+    unitPrice,
+    amountPaid,
+    payableAmount,
     advancePaid: csvOrNumber(order.advancePaid),
     settledAmount: csvOrNumber(order.settledAmount),
-    profit: csvOrNumber(order.profit),
-    quantity: Math.max(1, Number(order.quantity) || 1),
+    profit,
+    quantity,
     createdAt: order.createdAt || todayIsoDate(),
     delivery,
     deliveryPackages: dedupeOrderPackages(order, (Array.isArray(order.deliveryPackages) ? order.deliveryPackages : []).map((packageEntry, index) => {
@@ -1169,7 +1189,13 @@ function normalizeOrder(order) {
       };
     })),
     isToday: delivery?.deliveryDate === todayIsoDate(),
-    gstDetails: order.gstDetails || null
+    gstDetails: order.gstDetails ? {
+      ...order.gstDetails,
+      included: Boolean(order.gstDetails.included),
+      totalAmount: csvOrNumber(order.gstDetails.totalAmount),
+      gstAmount: csvOrNumber(order.gstDetails.gstAmount),
+      baseAmount: csvOrNumber(order.gstDetails.baseAmount)
+    } : null
   };
 }
 
@@ -1656,8 +1682,12 @@ function openDeliveryPackageDetails(orderId, packageId = '') {
 
   const sequence = Number(packageEntry?.sequence) || 1;
   const doNumber = packageEntry?.doNumber || `DO${sequence}`;
+  const parcelIndex = packageEntry
+    ? Math.max(1, (order.deliveryPackages || []).findIndex(p => p.id === packageId) + 1)
+    : 1;
+  const deliveryLabel = (order.quantity || 1) > 1 ? `${doNumber} (Parcel ${parcelIndex} of ${order.quantity})` : doNumber;
   const details = [
-    ['Delivery', `${doNumber} of ${order.quantity || 1}`],
+    ['Delivery', deliveryLabel],
     ['Delivery date', delivery.deliveryDate || delivery.submittedAt || order.createdAt],
     ['Booker', order.customerName],
     ['Booker ID', order.customerId],
@@ -1676,7 +1706,7 @@ function openDeliveryPackageDetails(orderId, packageId = '') {
     ['Net due', `₹${getOrderNetDue(order).toLocaleString()}`],
     ['Delivery status', packageEntry?.status || order.status]
   ];
-  document.getElementById('delivery-details-title').textContent = `${doNumber} · ${order.productModel}`;
+  document.getElementById('delivery-details-title').textContent = `${doNumber} · ${order.productModel}${(order.quantity || 1) > 1 ? ` (Parcel ${parcelIndex}/${order.quantity})` : ''}`;
   document.getElementById('delivery-details-body').innerHTML = details.map(([label, value]) =>
     `<div class="delivery-detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '—')}</strong></div>`
   ).join('');
@@ -1749,17 +1779,19 @@ function renderHomeOrders() {
   list.slice(0, 5).forEach(o => {
     const due = getOrderNetDue(o);
     const deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
+    const unitPrice = o.unitPrice || (o.quantity > 1 ? Math.round(o.amountPaid / o.quantity) : o.amountPaid);
+    const paidDisplay = `₹${o.amountPaid.toLocaleString()}${o.quantity > 1 ? `<br><small style="color:var(--text-muted); font-size:11px;">(₹${unitPrice.toLocaleString()}/unit)</small>` : ''}`;
     homeTbody.innerHTML += `
       <tr>
-        <td><strong>${o.id}</strong></td>
+        <td><strong>${o.id}</strong>${o.merchantOrderId ? `<br><small style="color:var(--text-muted); font-size:11px;">Merchant: ${o.merchantOrderId}</small>` : ''}</td>
         <td><span class="pill pill-indigo">${o.platform}</span></td>
         <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span>${packageProgressLabel(o) ? `<br><small>${packageProgressLabel(o)}</small>` : ''}</td>
         <td>${o.customerName}</td>
         <td>•••• ${o.cardLast4}</td>
-        <td>₹${o.amountPaid.toLocaleString()}</td>
+        <td>${paidDisplay}</td>
         <td style="color:#fbbf24;">₹${(o.advancePaid || 0).toLocaleString()}</td>
         <td style="color:#34d399; font-weight:700;">₹${due.toLocaleString()}</td>
-        <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.gstAmount}</span>` : '-'}</td>
+        <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.gstAmount || o.gstDetails.totalAmount}</span>` : '-'}</td>
         <td><span class="pill pill-amber">${o.status}</span></td>
         <td>
           ${deliveryPackages.length ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View delivery details</button>` : !o.delivery?.submitted ? `<button class="btn btn-primary btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Submit Delivery</button>` : `<button class="btn btn-subtle btn-sm" onclick="openDeliveryPackageDetails('${o.id}')">View details</button>`}
@@ -1807,6 +1839,8 @@ function renderOrdersTable() {
   pageItems.forEach(o => {
     const due = getOrderNetDue(o);
     const deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
+    const unitPrice = o.unitPrice || (o.quantity > 1 ? Math.round(o.amountPaid / o.quantity) : o.amountPaid);
+    const paidDisplay = `₹${o.amountPaid.toLocaleString()}${o.quantity > 1 ? `<br><small style="color:var(--text-muted); font-size:11px;">(₹${unitPrice.toLocaleString()}/unit)</small>` : ''}`;
     tbody.innerHTML += `
       <tr>
         <td><strong>${o.id}</strong>${o.merchantOrderId ? `<br><small style="color:var(--text-muted); font-size:11px;">Merchant: ${o.merchantOrderId}</small>` : ''}</td>
@@ -1814,10 +1848,10 @@ function renderOrdersTable() {
         <td>${o.productModel} <span class="pill pill-indigo">×${o.quantity || 1}</span>${packageProgressLabel(o) ? `<br><small>${packageProgressLabel(o)}</small>` : ''}</td>
         <td>•••• ${o.cardLast4}</td>
         <td>${o.customerName}</td>
-        <td>₹${o.amountPaid.toLocaleString()}</td>
+        <td>${paidDisplay}</td>
         <td style="color:#fbbf24;">₹${(o.advancePaid || 0).toLocaleString()}</td>
         <td style="color:#34d399; font-weight:700;">₹${due.toLocaleString()}</td>
-        <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.totalAmount}</span>` : '-'}</td>
+        <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.totalAmount || o.gstDetails.gstAmount}</span>` : '-'}</td>
         <td><span class="pill ${o.status === 'Settled' ? 'pill-green' : 'pill-amber'}">${o.status}</span></td>
         <td>
           <div style="display:flex; gap:6px;">
@@ -1859,8 +1893,9 @@ function approveBooking(orderId) {
 
 function orderDeliveryEntries(order) {
   const packages = dedupeOrderPackages(order, order.deliveryPackages || []);
-  if (packages.length) return packages.map(packageEntry => ({
+  if (packages.length) return packages.map((packageEntry, pIndex) => ({
     id: packageEntry.id,
+    orderIndex: pIndex + 1,
     sequence: Number(packageEntry.sequence) || 0,
     doNumber: packageEntry.doNumber || '',
     packageTag: packageEntry.packageTag || deliveryPackageTag(order, packageEntry),
@@ -1871,6 +1906,7 @@ function orderDeliveryEntries(order) {
   }));
   return order.delivery?.submitted ? [{
     id: `pkg_${order.id}_1`,
+    orderIndex: 1,
     sequence: 1,
     doNumber: 'DO1',
     packageTag: deliveryPackageTag(order, { sequence: 1, doNumber: 'DO1', delivery: order.delivery }),
@@ -1929,6 +1965,13 @@ function renderDeliveryTable() {
     return true;
   });
 
+  // Sort deliveries by DO sequence ascending: DO1, DO2, DO3...
+  deliveries.sort((a, b) => {
+    const seqA = Number(a.sequence) || Number(String(a.doNumber || '').match(/\d+/)?.[0]) || 0;
+    const seqB = Number(b.sequence) || Number(String(b.doNumber || '').match(/\d+/)?.[0]) || 0;
+    return seqA - seqB;
+  });
+
   const paginationState = getPaginationState('deliveries', 20);
   const totalPages = Math.max(1, Math.ceil(deliveries.length / paginationState.pageSize));
   paginationState.page = Math.min(Math.max(1, paginationState.page), totalPages);
@@ -1943,10 +1986,11 @@ function renderDeliveryTable() {
   pageItems.forEach(item => {
     const { order: o, delivery: d, gstDetails: packageGst, id: packageId } = item;
     const deliveryStatus = item.status || o.status;
+    const parcelText = o.quantity > 1 ? `<br><small style="color:var(--text-muted);">Parcel ${item.orderIndex || 1} of ${o.quantity}</small>` : '';
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong>${packageId ? `<br><small>${item.doNumber} of ${o.quantity}</small>` : ''}</td>
+        <td><strong>${o.productModel}</strong>${parcelText}</td>
         <td><strong>${o.id}</strong>${o.merchantOrderId ? `<br><small style="color:var(--text-muted); font-size:11px;">Merchant: ${o.merchantOrderId}</small>` : ''}</td>
         <td><strong>${item.doNumber || 'DO1'}</strong></td>
         <td>${d.recipientName}</td>
@@ -2191,10 +2235,30 @@ function renderInvoicesGallery() {
   }
 
   const list = getVisibleOrders().flatMap(order => {
-    const packageInvoices = (order.deliveryPackages || []).filter(item => item.gstDetails?.included)
-      .map(item => ({ order, packageId: item.id, gstDetails: item.gstDetails, delivery: item.delivery }));
-    if (order.gstDetails?.included) packageInvoices.unshift({ order, packageId: '', gstDetails: order.gstDetails, delivery: order.delivery });
-    return packageInvoices;
+    const packagesWithGst = (order.deliveryPackages || []).filter(item => item.gstDetails?.included);
+    if (packagesWithGst.length > 0) {
+      return packagesWithGst.map((item, idx) => ({
+        order,
+        packageId: item.id,
+        doNumber: item.doNumber || `DO${item.sequence || idx + 1}`,
+        parcelIndex: idx + 1,
+        totalParcels: order.quantity || packagesWithGst.length,
+        gstDetails: item.gstDetails,
+        delivery: item.delivery
+      }));
+    }
+    if (order.gstDetails?.included) {
+      return [{
+        order,
+        packageId: '',
+        doNumber: order.deliveryPackages?.[0]?.doNumber || 'DO1',
+        parcelIndex: 1,
+        totalParcels: order.quantity || 1,
+        gstDetails: order.gstDetails,
+        delivery: order.delivery
+      }];
+    }
+    return [];
   }).filter(entry => {
     const { order, gstDetails, delivery } = entry;
     if (!gstDetails || gstDetails.attachmentDeleted || (productFilter !== 'ALL' && order.productModel !== productFilter)) return false;
@@ -2215,18 +2279,19 @@ function renderInvoicesGallery() {
     const key = packageId || o.id;
     const packageArg = packageId ? `, '${packageId}'` : '';
     const hasInvoice = Boolean(gstDetails.fileData || gstDetails.fileId || gstDetails.fileUrl);
+    const parcelSubtitle = o.quantity > 1 ? ` | ${entry.doNumber || 'DO1'} (Parcel ${entry.parcelIndex || 1}/${o.quantity})` : ` | ${entry.doNumber || 'DO1'}`;
     container.innerHTML += `
       <div class="invoice-card">
         <div class="invoice-preview-box" data-invoice-preview="${key}" onclick="viewGstInvoice('${o.id}'${packageArg})" style="cursor:pointer;">
           ${hasInvoice ? '<span style="color:var(--text-muted);">Loading invoice...</span>' : '<span style="color:var(--text-muted);">Attachment unavailable</span>'}
         </div>
         <div style="font-size:0.85rem; font-weight:700;">${o.productModel}</div>
-        <div style="font-size:0.75rem; color:var(--text-muted);">Order: <strong>${o.id}</strong>${packageId ? ` | Package: ${packageId}` : ''} | Date: ${String(gstDetails.uploadedAt || entry.delivery?.submittedAt || o.createdAt || '').slice(0, 10)}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">Order: <strong>${o.id}</strong>${parcelSubtitle} | Date: ${String(gstDetails.uploadedAt || entry.delivery?.submittedAt || o.createdAt || '').slice(0, 10)}</div>
         <div style="font-size:0.75rem; color:var(--text-muted);">${gstDetails.shopName || 'N/A'} | Tax: ₹${gstDetails.gstAmount}</div>
         <div style="display:flex; gap:6px; margin-top:4px;">
           <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="viewGstInvoice('${o.id}'${packageArg})">View</button>
           <button class="btn btn-primary btn-sm" style="flex:1;" onclick="downloadSingleInvoice('${o.id}'${packageArg})">Download</button>
-          ${packageId ? '' : `<button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>`}
+          <button class="btn btn-subtle btn-sm" style="flex:1;" onclick="editGstInvoice('${o.id}')">Edit</button>
           <button class="btn btn-danger btn-sm" style="flex:1;" onclick="deleteGstInvoice('${o.id}'${packageArg})">Delete</button>
         </div>
       </div>
@@ -2663,7 +2728,8 @@ function handleCreateBooking(e) {
     customerName: cust.name,
     productModel: prod ? prod.name : (document.getElementById('modal-order-product-other').value.trim() || 'Custom Device'),
     cardLast4: document.getElementById('modal-order-card').value.trim(),
-    amountPaid: paid,
+    unitPrice: paid,
+    amountPaid: paid * quantity,
     quantity,
     payableAmount: (paid + comm) * quantity,
     advancePaid: adv,
@@ -2808,7 +2874,8 @@ async function handleSaveDeliveryWithGst(e) {
       customerName: customer.name,
       adminId: customer.adminId || AppState.currentUser.adminId || AppState.adminProfile.adminId,
       cardLast4: document.getElementById('direct-delivery-card-last4').value.trim(),
-      amountPaid,
+      unitPrice: amountPaid,
+      amountPaid: amountPaid * quantity,
       quantity,
       payableAmount: (amountPaid + commission) * quantity,
       advancePaid: 0,
@@ -3164,10 +3231,13 @@ function renderTodayDeliveryTable() {
 
   todayList.forEach(o => {
     const d = o.delivery;
+    const parcelSubtitle = o.packageId && o.quantity > 1
+      ? `<br><small style="color:var(--text-muted);">${o.doNumber} · Parcel ${o.packageNumber || 1} of ${o.quantity}</small>`
+      : (o.packageId ? `<br><small style="color:var(--text-muted);">${o.doNumber}</small>` : '');
     tbody.innerHTML += `
       <tr>
         <td><span class="pill pill-indigo">${d.platform}</span></td>
-        <td><strong>${o.productModel}</strong>${o.packageId ? `<br><small>${o.doNumber} of ${o.quantity}</small>` : ''}</td>
+        <td><strong>${o.productModel}</strong>${parcelSubtitle}</td>
         <td>${d.recipientName}</td>
         <td>${d.mobile}</td>
         <td><code>${d.tracking}</code></td>
@@ -3454,11 +3524,11 @@ function getTodayModalDeliveries() {
   const fPin = (document.getElementById('today-filter-pin')?.value || '').trim().toLowerCase();
   const fName = (document.getElementById('today-filter-name')?.value || '').toLowerCase().trim();
   const fProd = (document.getElementById('today-filter-product')?.value || '').toLowerCase().trim();
-  return dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
+  const rows = dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
-    packageNumber: entry.packageEntry ? (entry.sequence || index + 1) : 1,
-    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
+    packageNumber: entry.orderIndex || (entry.packageEntry ? (entry.sequence || index + 1) : 1),
+    doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : (entry.doNumber || 'DO1')
   })))).filter(entry => {
     const delivery = entry.delivery;
     if (!delivery?.submitted || String(delivery.deliveryDate || delivery.submittedAt || entry.order.createdAt).slice(0, 10) !== todayIsoDate()) return false;
@@ -3475,6 +3545,14 @@ function getTodayModalDeliveries() {
     doNumber: entry.doNumber,
     packageTag: entry.packageTag || deliveryPackageTag(entry.order, entry)
   }));
+
+  rows.sort((a, b) => {
+    const seqA = Number(a.sequence) || Number(String(a.doNumber || '').match(/\d+/)?.[0]) || 0;
+    const seqB = Number(b.sequence) || Number(String(b.doNumber || '').match(/\d+/)?.[0]) || 0;
+    return seqA - seqB;
+  });
+
+  return rows;
 }
 
 function exportCustomerLedgerCSV() {
