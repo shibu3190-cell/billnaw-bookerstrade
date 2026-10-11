@@ -48,25 +48,36 @@ DeviceTrade POS is a device trading and trade-in logistics management applicatio
 - **No Legacy Delivery**: Every delivery (single or multi-package) creates a structured package record with `doNumber`, ensuring `"Legacy delivery"` never displays.
 - Parcel limit: Maximum parcels per order cannot exceed `order.quantity` (enforced with 409 conflict).
 
-### D. GST Invoicing & Storage
+### D. GST Invoicing, Deduplication & Storage
 - Invoices can be attached per package or per order (PDF, PNG, JPG).
 - Invoices are uploaded to Firebase Storage and metadata recorded in Firestore `invoiceFiles`.
-- Access control strictly enforces that only the Booker, Owning Admin, or Master Admin can view or download the invoice.
+- **Deduplication Rule**: An order's invoice must render exactly once in the GST Bills gallery. If packages with GST exist, map only package invoices. Never duplicate an invoice across both order-level and package-level slots.
+- **Labeling Rule**: Gallery cards display human-readable labels (`Order: OD232694 | DO2 (Parcel 1/2)`) instead of internal package UUIDs.
 
-### E. Financial Settlement Pipeline
-- When an order is delivered, admins can record partial or full payments via `/api/orders/settle`.
-- Updates `totalSettled` on the Booker account and `settledAmount` on the Order record.
-- When `advancePaid + settledAmount >= payableAmount`, order automatically transitions to `Settled` status with `settledAt` timestamp.
+### E. Financial Settlement & Mathematical Accounting Formulas
+- **Card Payment Accounting**:
+  - `unitPrice`: Price paid on card per unit.
+  - `amountPaid`: Total card payment for the entire order ($unitPrice \times quantity$).
+  - `payableAmount`: Total booker payout ($(unitPrice + commission) \times quantity$).
+  - `profit`: Total booker commission ($commission \times quantity$).
+  - `netDue`: $payableAmount - advancePaid - settledAmount$.
+- **Exact Balance Guarantee**:
+  - $\text{Active Bookings Volume} + \text{Booker Profit Due} = \text{Total Pending Due}$
+  - In orders and pipeline tables, multi-quantity orders show total card paid with a unit rate breakdown (e.g., `₹20,000` with `₹10,000/unit`).
+- **Settlement Lifecycle**:
+  - When an order is delivered, admins record payments via `/api/orders/settle`.
+  - When `advancePaid + settledAmount >= payableAmount`, order transitions to `Settled` status with `settledAt` timestamp.
 
 ---
 
-## 4. Current Fine-Tuning Focus & Known Issues Under Investigation
-1. **Quick Booking vs Quick Delivery Add Product Alignment**:
-   - Product dropdown in Quick Delivery (`direct-delivery-product`) must match Quick Booking (`modal-order-product`) in presentation, displaying product target price and commission.
-   - Dynamic synchronization between custom model entry and locked model fields.
-2. **Merchant Order ID vs Order ID Distinction**:
-   - Clear separation between internal POS Order ID (auto-generated) and external Merchant Order ID (entered by user or optional).
-   - Consistent labeling across Quick Booking and Quick Delivery modals.
-3. **Delivery Order (DO) Function Uniformity**:
-   - Eliminating the "Legacy delivery" fallback by ensuring every delivery submission (single or multi-package) creates a structured package record with proper DO sequence (`DO1`, `DO2`...).
-   - Ensuring Today's Dispatches view accurately displays DO sequence numbers and package progress.
+## 4. Key Conventions & Quality Guardrails
+1. **DO Sequence & Parcel Labels**:
+   - Deliveries table orders by DO sequence ascending: `DO1, DO2, DO3...`.
+   - Subtitle under model name formats as `Parcel 1 of 2` (never `DO3 of 2`).
+2. **Merchant Order ID vs System Order ID Distinction**:
+   - Internal POS Order ID is auto-generated (or custom).
+   - Merchant Order ID is external marketplace ID (Flipkart/Amazon).
+   - Both are displayed, indexed, and searchable.
+3. **Automated Testing Guard**:
+   - All accounting equations, DO sorting, and invoice deduplication rules are guarded in `backend/test/accounting-invoices-alignment.test.js`.
+
