@@ -503,12 +503,14 @@ async function syncCloudData(showResult = false) {
         username: importedAdmin.Username || importedAdmin.username || '',
         active: importedAdmin.Active !== 'false' && importedAdmin.active !== false
       })).filter(adminItem => adminItem.adminId && adminItem.username);
-      const importedAdmin = AppState.admins[0];
-      AppState.adminProfile = {
-        adminId: importedAdmin['Admin ID'] || AppState.adminProfile.adminId,
-        name: importedAdmin['Admin Name'] || AppState.adminProfile.name,
-        username: importedAdmin.Username || AppState.adminProfile.username
-      };
+      const currentAdminRecord = AppState.admins.find(adminItem => sameAdminId(adminItem.adminId, AppState.currentUser?.adminId));
+      if (currentAdminRecord) {
+        AppState.adminProfile = {
+          adminId: currentAdminRecord.adminId,
+          name: currentAdminRecord.name || AppState.adminProfile.name,
+          username: currentAdminRecord.username || AppState.adminProfile.username
+        };
+      }
     }
     if (AppState.currentUser?.role === 'admin' || AppState.currentUser?.role === 'customer') {
       AppState.customers = customers.map(customer => ({
@@ -1181,7 +1183,7 @@ function normalizeOrder(order) {
 function getEffectiveAdminScopeId() {
   if (!AppState.currentUser || AppState.currentUser.role !== 'admin') return null;
   if (AppState.currentUser.isMaster) {
-    return AppState.activeAdminScope || AppState.currentUser.adminId;
+    return AppState.activeAdminScope || null;
   }
   return AppState.currentUser.adminId;
 }
@@ -1189,11 +1191,14 @@ function getEffectiveAdminScopeId() {
 function getVisibleOrders() {
   if (!AppState.currentUser) return [];
   if (AppState.currentUser.role !== 'admin') {
-    return dedupeOrderRecords(AppState.orders.filter(order => order.customerId === AppState.currentUser.customerId));
+    return dedupeOrderRecords(AppState.orders.filter(order =>
+      String(order.customerId || '').trim().toLowerCase() === String(AppState.currentUser.customerId || '').trim().toLowerCase()));
   }
-  const currentScope = getEffectiveAdminScopeId();
-  if (!currentScope) return [];
-  if (AppState.currentUser.isMaster) return dedupeOrderRecords(AppState.orders.filter(order => sameAdminId(order.adminId, currentScope)));
+  if (AppState.currentUser.isMaster) {
+    return dedupeOrderRecords(AppState.activeAdminScope
+      ? AppState.orders.filter(order => sameAdminId(order.adminId, AppState.activeAdminScope))
+      : AppState.orders);
+  }
   return dedupeOrderRecords(AppState.orders.filter(order => sameAdminId(order.adminId, AppState.currentUser.adminId)));
 }
 
@@ -1424,7 +1429,9 @@ async function executeLogin(e) {
 function showAuthenticatedView() {
   document.getElementById('view-auth').style.display = 'none';
   document.getElementById('view-app-main').style.display = 'flex';
-  document.getElementById('badge-active-role').textContent = AppState.currentUser.role === 'admin' ? 'Master Admin' : 'Booker Portal';
+  document.getElementById('badge-active-role').textContent = AppState.currentUser.role === 'admin'
+    ? (AppState.currentUser.isMaster ? 'Master Admin' : 'Admin Portal')
+    : 'Booker Portal';
   document.getElementById('user-display-label').textContent = AppState.currentUser.name;
   if (AppState.currentUser.role === 'admin') {
     document.getElementById('cfg-admin-id').value = AppState.currentUser.adminId;
@@ -1974,9 +1981,10 @@ function renderCustomersTable() {
   const search = (document.getElementById('cust-search')?.value || '').toLowerCase();
   const filterState = document.getElementById('cust-status-filter')?.value || 'ALL';
 
-  const currentScope = getEffectiveAdminScopeId();
   const customers = AppState.currentUser.isMaster
-    ? AppState.customers.filter(customer => sameAdminId(customer.adminId, currentScope || AppState.currentUser.adminId))
+    ? (AppState.activeAdminScope
+        ? AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.activeAdminScope))
+        : AppState.customers)
     : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
   const filteredCustomers = customers.filter(c => {
     const cOrders = dedupeOrderRecords(AppState.orders.filter(o => o.customerId === c.id));
@@ -2181,14 +2189,12 @@ function renderInvoicesGallery() {
   const dateTo = document.getElementById('invoice-date-to')?.value || dateFrom;
 
   if (selectFilter && selectFilter.options.length <= 1) {
-    AppState.products.forEach(p => {
+    getAvailableProductsForCurrentUser().forEach(p => {
       selectFilter.innerHTML += `<option value="${p.name}">${p.name}</option>`;
     });
   }
 
-  const isAdmin = AppState.currentUser?.role === 'admin';
-  const list = AppState.orders.flatMap(order => {
-    if (!isAdmin && order.customerId !== AppState.currentUser?.customerId) return [];
+  const list = getVisibleOrders().flatMap(order => {
     const packageInvoices = (order.deliveryPackages || []).filter(item => item.gstDetails?.included)
       .map(item => ({ order, packageId: item.id, gstDetails: item.gstDetails, delivery: item.delivery }));
     if (order.gstDetails?.included) packageInvoices.unshift({ order, packageId: '', gstDetails: order.gstDetails, delivery: order.delivery });
@@ -2243,7 +2249,7 @@ function toggleInvoiceDateFilters() {
 }
 
 async function deleteGstInvoice(orderId, packageId = '') {
-  const order = AppState.orders.find(item => item.id === orderId);
+  const order = getVisibleOrders().find(item => item.id === orderId);
   const packageEntry = order?.deliveryPackages?.find(item => item.id === packageId);
   const gstDetails = packageId ? packageEntry?.gstDetails : order?.gstDetails;
   const fileId = gstDetails?.fileId;
@@ -2307,9 +2313,10 @@ function renderProductListSettings() {
   if (!container) return;
   const searchInput = document.getElementById('product-catalog-search');
   const searchTerm = (searchInput?.value || '').trim().toLowerCase();
-  const scopeId = getEffectiveAdminScopeId();
   const products = (AppState.currentUser?.isMaster
-    ? AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, scopeId || AppState.currentUser.adminId))
+    ? (AppState.activeAdminScope
+        ? AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.activeAdminScope))
+        : AppState.products)
     : AppState.products.filter(product => !product.adminId || sameAdminId(product.adminId, AppState.currentUser.adminId)))
     .filter(product => {
       if (!searchTerm) return true;
@@ -2348,7 +2355,9 @@ function renderProductListSettings() {
 function getAvailableProductsForCurrentUser(includeInactive = false) {
   const actor = AppState.currentUser;
   return AppState.products.filter(product => {
-    const inScope = actor?.isMaster || !product.adminId || sameAdminId(product.adminId, actor?.adminId);
+    const inScope = actor?.isMaster
+      ? (!AppState.activeAdminScope || !product.adminId || sameAdminId(product.adminId, AppState.activeAdminScope))
+      : (!product.adminId || sameAdminId(product.adminId, actor?.adminId));
     return inScope && (includeInactive || product.active !== false);
   });
 }
@@ -2363,9 +2372,12 @@ async function openNewOrderModal() {
   const cSelect = document.getElementById('modal-order-customer-select');
   if (AppState.currentUser.role === 'admin') {
     const availableCustomers = AppState.currentUser.isMaster
-      ? AppState.customers
+      ? (AppState.activeAdminScope
+          ? AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.activeAdminScope))
+          : AppState.customers)
       : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
-    cSelect.innerHTML = availableCustomers.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join('');
+    const selfOption = `<option value="ADMIN_SELF">${AppState.currentUser.name} (Admin Self)</option>`;
+    cSelect.innerHTML = `${selfOption}${availableCustomers.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join('')}`;
   } else {
     cSelect.innerHTML = `<option value="${AppState.currentUser.customerId}">${AppState.currentUser.name}</option>`;
   }
@@ -2508,11 +2520,15 @@ function openDirectDeliveryEntry() {
   document.getElementById('deliv-form-order-id').value = '';
   document.getElementById('deliv-order-id-input').value = '';
   const productSelect = document.getElementById('direct-delivery-product');
-  productSelect.innerHTML = `${AppState.products.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}<option value="Other">Custom model</option>`;
+  const availableProducts = getAvailableProductsForCurrentUser();
+  productSelect.innerHTML = `${availableProducts.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}<option value="Other">Custom model</option>`;
   const ownerSelect = document.getElementById('direct-delivery-owner');
   const ownerField = document.getElementById('direct-delivery-owner-field');
   if (AppState.currentUser.role === 'admin') {
-    const customers = AppState.currentUser.isMaster ? AppState.customers
+    const customers = AppState.currentUser.isMaster
+      ? (AppState.activeAdminScope
+          ? AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.activeAdminScope))
+          : AppState.customers)
       : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
     ownerSelect.innerHTML = `<option value="ADMIN_SELF">My admin account</option>${customers.map(customer => `<option value="${customer.id}">${customer.name} (${customer.id})</option>`).join('')}`;
     ownerField.hidden = false;
@@ -2590,7 +2606,7 @@ function handleCreateBooking(e) {
       customInput.value = mapped.productModel;
       document.getElementById('modal-order-paid').value = (AppState.productIndexById.get(String(mapped.productId || '').toLowerCase()) || AppState.products.find(item => item.id === mapped.productId))?.targetPrice || '';
     } else {
-      alert('Select the mapped catalog product instead of submitting its name as a custom product.');
+      alert('This product is not in your catalog. Only active products in your Admin catalog can be selected. Please select an existing catalog product or add it in Settings.');
       return;
     }
   }
@@ -2600,10 +2616,13 @@ function handleCreateBooking(e) {
     return;
   }
   const custId = document.getElementById('modal-order-customer-select').value;
-  const cust = AppState.customers.find(c => String(c.id).trim() === String(custId).trim()) ||
-    (AppState.currentUser.role === 'customer' && String(AppState.currentUser.customerId).trim() === String(custId).trim()
-      ? { id: AppState.currentUser.customerId, name: AppState.currentUser.name, adminId: AppState.currentUser.adminId }
-      : null);
+  const isSelf = custId === 'ADMIN_SELF' || String(custId).startsWith('ADMIN-SELF-');
+  const cust = isSelf
+    ? { id: `ADMIN-SELF-${AppState.currentUser.adminId}`, name: `${AppState.currentUser.name} (Admin)`, adminId: AppState.currentUser.adminId }
+    : AppState.customers.find(c => String(c.id).trim() === String(custId).trim()) ||
+      (AppState.currentUser.role === 'customer' && String(AppState.currentUser.customerId).trim() === String(custId).trim()
+        ? { id: AppState.currentUser.customerId, name: AppState.currentUser.name, adminId: AppState.currentUser.adminId }
+        : null);
   if (!cust) {
     alert('Create or select a valid booker account first.');
     return;
@@ -2649,6 +2668,12 @@ function handleCreateBooking(e) {
 function openDeliveryModalForOrder(orderId) {
   const o = AppState.orders.find(item => item.id === orderId);
   if (!o) return;
+
+  const savedPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
+  if (savedPackages.length < (o.quantity || 1)) {
+    continueDirectDeliveryEntry(orderId);
+    return;
+  }
 
   directDeliveryEntry = false;
   setDirectDeliveryFieldsActive(false);
@@ -2735,6 +2760,9 @@ async function handleSaveDeliveryWithGst(e) {
         document.getElementById('direct-delivery-product').value = mapped.productId;
         product = AppState.products.find(item => item.id === mapped.productId) || product;
         productModel = mapped.productModel;
+      } else {
+        alert('This product is not in your catalog. Only active products in your Admin catalog can be selected. Please select an existing catalog product or add it in Settings.');
+        return;
       }
     }
     const amountPaid = Number(document.getElementById('direct-delivery-card-amount').value);
@@ -2879,9 +2907,10 @@ async function handleSaveDeliveryWithGst(e) {
       return;
     }
   } else {
-    order.status = 'Out for Delivery';
+    order.status = order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery';
     order.delivery = delivery;
     order.gstDetails = gstDetails;
+    persistLocalState();
     renderAllViews();
     triggerAutoCloudSync('DELIVERY_SUBMITTED', { order });
   }
@@ -2941,8 +2970,9 @@ function handleExecuteSettlement(e) {
   const amount = Number(document.getElementById('settle-amount-input').value);
   const notes = document.getElementById('settle-notes').value;
 
-  const order = AppState.orders.find(o => o.id === orderId);
-  const cust = AppState.customers.find(c => c.id === custId);
+  const isSelf = String(custId).startsWith('ADMIN-SELF-');
+  const cust = AppState.customers.find(c => c.id === custId)
+    || (isSelf ? { id: custId, name: order?.customerName || `${AppState.currentUser?.name} (Admin)` } : null);
   const outstanding = order ? getOrderNetDue(order) : 0;
 
   if (!order || !cust || !Number.isFinite(amount) || amount <= 0 || amount > outstanding) {
@@ -2969,7 +2999,8 @@ function handleExecuteSettlement(e) {
 
 // 9. Modals, Lifetime Drilldown & Out For Delivery Today
 function openCreateCustomerModal() {
-  const adminDigits = String(AppState.currentUser.adminId).match(/(?:adm-?)(\d{3})$/i)?.[1] || '000';
+  const activeAdminId = AppState.activeAdminScope || AppState.currentUser.adminId;
+  const adminDigits = String(activeAdminId).match(/(?:adm-?)(\d{3})$/i)?.[1] || '000';
   const prefix = adminDigits.slice(-2);
   const customerNumbers = AppState.customers
     .map(customer => String(customer.id).match(new RegExp(`^cust${prefix}(\\d{2})$`, 'i')))
@@ -2985,19 +3016,20 @@ function openCreateCustomerModal() {
   document.getElementById('new-cust-name').value = '';
   document.getElementById('new-cust-mobile').value = '';
   document.getElementById('new-cust-password').value = `dt@${Math.floor(1000 + Math.random() * 9000)}`;
-  document.getElementById('new-cust-admin-creator').value = `${AppState.currentUser.name} (${AppState.currentUser.adminId})`;
+  document.getElementById('new-cust-admin-creator').value = `${AppState.currentUser.name} (${activeAdminId})`;
   openModal('modal-create-customer');
 }
 
 function handleCreateCustomerAccount(e) {
   e.preventDefault();
+  const effectiveAdminId = AppState.activeAdminScope || AppState.currentUser.adminId || AppState.adminProfile.adminId;
   const newCust = {
     id: document.getElementById('new-cust-id').value,
     username: document.getElementById('new-cust-id').value,
     name: document.getElementById('new-cust-name').value.trim(),
     mobile: document.getElementById('new-cust-mobile').value.trim(),
     createdByAdmin: AppState.currentUser.name,
-    adminId: AppState.currentUser.adminId || AppState.adminProfile.adminId,
+    adminId: effectiveAdminId,
     totalSettled: 0
   };
   const initialPassword = document.getElementById('new-cust-password').value.trim();
@@ -3040,7 +3072,7 @@ function renderLifetimeDrilldownTable() {
   const fMonth = document.getElementById('lifetime-filter-month').value;
   const fYear = document.getElementById('lifetime-filter-year').value;
 
-  const settledOrders = AppState.orders.filter(o => {
+  const settledOrders = getVisibleOrders().filter(o => {
     if (o.status !== 'Settled') return false;
     const dateStr = o.settledAt || '';
     if (type === 'DAY' && fDay && dateStr !== fDay) return false;
@@ -3155,6 +3187,7 @@ function setProductActive(productId, active) {
   if (!product || (!AppState.currentUser?.isMaster && !sameAdminId(product.adminId, AppState.currentUser?.adminId))) return;
   if (!confirm(`${active ? 'Activate' : 'Deactivate'} ${product.name}?`)) return;
   product.active = active;
+  refreshProductLookupIndex();
   persistLocalState();
   renderProductListSettings();
   triggerAutoCloudSync('PRODUCT_SYNC', { product });
@@ -3188,13 +3221,18 @@ function handleSaveProduct(e) {
   if (savedProduct) triggerAutoCloudSync('PRODUCT_SYNC', { product: savedProduct });
 
   closeModal('modal-edit-product');
+  refreshProductLookupIndex();
   persistLocalState();
   renderProductListSettings();
   alert('Product catalog updated.');
 }
 
 function exportProductCatalogCSV() {
-  const products = AppState.products.filter(product => AppState.currentUser?.isMaster || !product.adminId || product.adminId === AppState.currentUser?.adminId);
+  const effectiveAdminId = getEffectiveAdminScopeId();
+  const products = AppState.products.filter(product => {
+    if (AppState.currentUser?.isMaster && !effectiveAdminId) return true;
+    return sameAdminId(product.adminId, effectiveAdminId || AppState.currentUser?.adminId);
+  });
   const csv = ['Product ID,Product Name,Target Price,Commission,Admin ID,Active', ...products.map(product =>
     [product.id, product.name, product.targetPrice, product.commission, product.adminId || '', product.active !== false].map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')
   )].join('\n');
@@ -3277,6 +3315,7 @@ function handleProductCatalogUpload(input) {
       triggerAutoCloudSync('PRODUCT_SYNC', { product });
       imported += 1;
     });
+    refreshProductLookupIndex();
     persistLocalState();
     renderProductListSettings();
     alert(`Imported ${imported} product(s).${errors.length ? `\nSkipped ${errors.length} row(s):\n${errors.slice(0, 5).join('\n')}` : ''}`);
@@ -3402,12 +3441,21 @@ function getTodayModalDeliveries() {
 
 function exportCustomerLedgerCSV() {
   let csv = "Customer ID,Customer Name,Created By Admin,Orders Count,Total Paid,Advance Taken,Settled,Net Balance\n";
-  AppState.customers.forEach(c => {
-    const cOrders = dedupeOrderRecords(AppState.orders.filter(o => o.customerId === c.id));
-    const paid = cOrders.reduce((s, o) => s + o.amountPaid, 0);
-    const payable = cOrders.reduce((s, o) => s + o.payableAmount, 0);
-    const advance = cOrders.reduce((s, o) => s + (o.advancePaid || 0), 0);
-    const settled = c.totalSettled || 0;
+  const visibleOrders = getVisibleOrders();
+  const effectiveAdminId = getEffectiveAdminScopeId();
+  const visibleCustomers = AppState.customers.filter(c => {
+    if (AppState.currentUser?.role === 'customer') {
+      return sameCustomerId(c.id, AppState.currentUser?.id);
+    }
+    if (!effectiveAdminId) return true;
+    return sameAdminId(c.createdByAdmin, effectiveAdminId);
+  });
+  visibleCustomers.forEach(c => {
+    const cOrders = dedupeOrderRecords(visibleOrders.filter(o => sameCustomerId(o.customerId, c.id)));
+    const paid = cOrders.reduce((s, o) => s + (Number(o.amountPaid) || 0), 0);
+    const payable = cOrders.reduce((s, o) => s + (Number(o.payableAmount) || 0), 0);
+    const advance = cOrders.reduce((s, o) => s + (Number(o.advancePaid) || 0), 0);
+    const settled = Number(c.totalSettled) || 0;
     const bal = payable - advance - settled;
     csv += `"${c.id}","${c.name}","${c.createdByAdmin || 'N/A'}",${cOrders.length},${paid},${advance},${settled},${bal}\n`;
   });
@@ -3415,16 +3463,25 @@ function exportCustomerLedgerCSV() {
 }
 
 function downloadAllInvoicesCSV() {
-  let csv = "Order ID,Customer Name,Product,Shop Name,GST Number,Base Amount,GST Tax,Total Gross\n";
-  AppState.orders.filter(o => o.gstDetails?.included).forEach(o => {
-    const g = o.gstDetails;
-    csv += `"${o.id}","${o.customerName}","${o.productModel}","${g.shopName}","${g.gstNumber}",${g.baseAmount},${g.gstAmount},${g.totalAmount}\n`;
+  let csv = "Order ID,Package ID,Customer Name,Product,Shop Name,GST Number,Base Amount,GST Tax,Total Gross\n";
+  const visibleOrders = getVisibleOrders();
+  visibleOrders.forEach(o => {
+    const pkgs = (o.deliveryPackages || []).filter(p => p.gstDetails?.included);
+    if (pkgs.length > 0) {
+      pkgs.forEach(p => {
+        const g = p.gstDetails;
+        csv += `"${o.id}","${p.id || ''}","${o.customerName}","${o.productModel}","${g.shopName || ''}","${g.gstNumber || ''}",${g.baseAmount || 0},${g.gstAmount || 0},${g.totalAmount || 0}\n`;
+      });
+    } else if (o.gstDetails?.included) {
+      const g = o.gstDetails;
+      csv += `"${o.id}","","${o.customerName}","${o.productModel}","${g.shopName || ''}","${g.gstNumber || ''}",${g.baseAmount || 0},${g.gstAmount || 0},${g.totalAmount || 0}\n`;
+    }
   });
   triggerBlobDownload(csv, 'GST_Invoices_Master_List.csv', 'text/csv;charset=utf-8;');
 }
 
 function downloadSingleInvoice(orderId, packageId = '') {
-  const order = AppState.orders.find(o => o.id === orderId);
+  const order = getVisibleOrders().find(o => o.id === orderId);
   const gstDetails = packageId ? order?.deliveryPackages?.find(item => item.id === packageId)?.gstDetails : order?.gstDetails;
   if (!order || !gstDetails) return;
   const fileId = gstDetails.fileId;
@@ -3455,15 +3512,15 @@ function getInvoiceAttachmentUrl(gstDetails) {
 
 function exportLifetimeBookingsToExcel() {
   let csv = "Order ID,Platform,Product Model,Customer Name,Card Last 4,Amount Paid,Settled Date,GST Total,Status\n";
-  AppState.orders.filter(o => o.status === 'Settled').forEach(o => {
-    const gstTot = o.gstDetails?.included ? o.gstDetails.totalAmount : 0;
+  getVisibleOrders().filter(o => o.status === 'Settled').forEach(o => {
+    const gstTot = o.gstDetails?.included ? (o.gstDetails.totalAmount || 0) : 0;
     csv += `"${o.id}","${o.platform}","${o.productModel}","${o.customerName}","${o.cardLast4}",${o.amountPaid},"${o.settledAt}",${gstTot},"${o.status}"\n`;
   });
   triggerBlobDownload(csv, `Lifetime_Settled_Deals_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
 
 async function viewGstInvoice(orderId, packageId = '') {
-  const order = AppState.orders.find(o => o.id === orderId);
+  const order = getVisibleOrders().find(o => o.id === orderId);
   const packageEntry = order?.deliveryPackages?.find(item => item.id === packageId);
   const g = packageId ? packageEntry?.gstDetails : order?.gstDetails;
   if (!order || !g) return;

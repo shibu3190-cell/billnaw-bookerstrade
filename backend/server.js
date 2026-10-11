@@ -16,6 +16,7 @@ const ISOLATED_TEST_MODE = process.env.APP_TEST_MODE === 'isolated';
 // Absolute path to .env file so it loads regardless of execution directory
 dotenv.config({ path: path.join(__dirname, '.env') });
 
+const fs = require('fs');
 const app = express();
 app.set('trust proxy', 1);
 
@@ -27,6 +28,11 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '20mb' }));
+
+const frontendDir = path.join(__dirname, '../frontend');
+if (fs.existsSync(frontendDir)) {
+  app.use(express.static(frontendDir));
+}
 
 function loadServiceAccount() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -118,7 +124,7 @@ async function deleteOldInvoiceFiles() {
   return deletedFileIds;
 }
 
-async function uploadInvoiceFile(gstDetails, orderId, stableFileId = false) {
+async function uploadInvoiceFile(gstDetails, orderId, stableFileId = false, ownerContext = {}) {
   if (!gstDetails?.fileData) return { gstDetails, deletedFileIds: [] };
 
   const match = /^data:([^;]+);base64,(.+)$/.exec(gstDetails.fileData);
@@ -158,8 +164,8 @@ async function uploadInvoiceFile(gstDetails, orderId, stableFileId = false) {
   await db.collection('invoiceFiles').doc(fileId).set({
     fileId,
     orderId,
-    adminId: gstDetails.adminId || '',
-    customerId: gstDetails.customerId || '',
+    adminId: gstDetails.adminId || ownerContext.adminId || '',
+    customerId: gstDetails.customerId || ownerContext.customerId || '',
     storagePath,
     fileUrl: '',
     fileName: gstDetails.fileName || `${fileId}.${extension}`,
@@ -424,7 +430,7 @@ app.get('/api/invoices/:fileId', authenticate, requireSession, async (req, res) 
     }
     const ownsInvoice = actor.isMaster || (actor.role === 'admin'
       ? sameOwner(ownerRecord.adminId, actor.adminId)
-      : String(ownerRecord.customerId || '').trim() === String(actor.customerId || '').trim());
+      : sameOwner(ownerRecord.customerId, actor.customerId));
     if (!ownsInvoice) return res.status(403).json({ success: false, message: 'You cannot access this invoice.' });
 
     res.set({
@@ -462,7 +468,7 @@ app.delete('/api/invoices/:fileId', authenticate, requireSession, async (req, re
     }
     const ownsInvoice = actor.isMaster || (actor.role === 'admin'
       ? sameOwner(ownerRecord.adminId, actor.adminId)
-      : String(ownerRecord.customerId || '').trim() === String(actor.customerId || '').trim());
+      : sameOwner(ownerRecord.customerId, actor.customerId));
     if (!ownsInvoice) return res.status(403).json({ success: false, message: 'You cannot delete this invoice.' });
     if (record.storagePath) await storageBucket.file(record.storagePath).delete({ ignoreNotFound: true });
     await invoiceRef.update({ storagePath: '', fileUrl: '', deletedAt: new Date().toISOString() });
@@ -519,7 +525,7 @@ app.post('/api/auth/login', authenticate, rateLimitLogin, async (req, res) => {
       if (customerData.active === false) return res.status(403).json({ success: false, message: 'This booker account is revoked.' });
       const customerId = customerData.id || customerSnapshot.docs[0].id;
       if (passwordCheck.needsUpgrade) await migrateLegacyPassword('customers', 'Customers', customerId, password);
-      const user = { name: customerData.name, role: 'customer', adminId: customerData.adminId, customerId, isMaster: false, sessionVersion: Number(customerData.sessionVersion) || 0 };
+      const user = { name: customerData.name, username: customerData.username || customerId, role: 'customer', adminId: customerData.adminId, customerId, isMaster: false, sessionVersion: Number(customerData.sessionVersion) || 0 };
       return res.json({ success: true, user, sessionToken: issueSession(user) });
     }
     res.status(401).json({ success: false, message: 'Invalid credentials.' });
@@ -561,7 +567,7 @@ async function findUserInSheets(username, password) {
       }
       const customerId = sheetField(record, ['Customer ID', 'Booker ID', 'id']);
       if (passwordCheck.needsUpgrade) await migrateLegacyPassword('customers', 'Customers', customerId, password);
-      return { name: sheetField(record, ['Full Name', 'Customer Name', 'Name', 'name']), role: 'customer', adminId: sheetField(record, ['Admin ID', 'adminId']), customerId, isMaster: false, sessionVersion: Number(sheetField(record, ['Session Version', 'sessionVersion'])) || 0 };
+      return { name: sheetField(record, ['Full Name', 'Customer Name', 'Name', 'name']), username: sheetField(record, ['Username', 'Admin Username', 'Booker ID', 'Customer ID']) || customerId, role: 'customer', adminId: sheetField(record, ['Admin ID', 'adminId']), customerId, isMaster: false, sessionVersion: Number(sheetField(record, ['Session Version', 'sessionVersion'])) || 0 };
     }
   }
   return null;
@@ -788,7 +794,7 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
     const existingOrder = orderSnapshot.data();
     const ownsOrder = actor.isMaster || (actor.role === 'admin'
       ? sameOwner(existingOrder.adminId, actor.adminId)
-      : String(existingOrder.customerId || '').trim() === String(actor.customerId || '').trim());
+      : sameOwner(existingOrder.customerId, actor.customerId));
     if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only edit your own booking.' });
 
     if (packageEntry) {
@@ -796,7 +802,7 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       if (!packageId || !packageEntry.delivery || typeof packageEntry.delivery !== 'object') {
         return res.status(400).json({ success: false, message: 'A package id and delivery details are required.' });
       }
-      const uploaded = await uploadInvoiceFile(packageEntry.gstDetails, orderId, true);
+      const uploaded = await uploadInvoiceFile(packageEntry.gstDetails, orderId, true, { adminId: existingOrder.adminId, customerId: existingOrder.customerId });
       let persistedPackage = {
         id: packageId,
         delivery: packageEntry.delivery,
@@ -871,7 +877,7 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       return res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, packageTag: persistedPackage.packageTag, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
     }
 
-    const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId);
+    const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId, false, { adminId: existingOrder.adminId, customerId: existingOrder.customerId });
     const persistedGstDetails = uploadedInvoice.gstDetails?.fileData === ''
       ? uploadedInvoice.gstDetails
       : (uploadedInvoice.gstDetails || null);
@@ -881,12 +887,13 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
       persistedGstDetails.orderId = orderId;
     }
 
+    const targetStatus = existingOrder.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery';
     await tryFirestore(
       () => orderRef.update({
         delivery,
         gstDetails: persistedGstDetails,
-        status: 'Out for Delivery',
-        isToday: true
+        status: targetStatus,
+        isToday: existingOrder.status !== 'Pending Approval'
       }),
       `update delivery ${orderId}`
     );
@@ -941,7 +948,7 @@ app.post('/api/orders/package-status', authenticate, requireSession, async (req,
     const order = orderSnapshot.data();
     const ownsOrder = actor.isMaster || (actor.role === 'admin'
       ? sameOwner(order.adminId, actor.adminId)
-      : String(order.customerId || '').trim() === String(actor.customerId || '').trim());
+      : sameOwner(order.customerId, actor.customerId));
     if (!ownsOrder) return res.status(403).json({ success: false, message: 'You can only update your own booking.' });
     const result = await db.runTransaction(async transaction => {
       const freshSnapshot = await transaction.get(orderRef);
@@ -987,6 +994,9 @@ app.post('/api/orders/status', authenticate, requireSession, async (req, res) =>
     if (!orderSnapshot.exists) return res.status(404).json({ success: false, message: 'Booking not found.' });
     if (!canAccessOrder(actor, orderSnapshot.data())) return res.status(403).json({ success: false, message: 'You can only update bookings owned by your account.' });
     const updateObj = { status };
+    if (req.body.settledAmount !== undefined && Number.isFinite(Number(req.body.settledAmount))) {
+      updateObj.settledAmount = Number(req.body.settledAmount);
+    }
     if (status === 'Settled' && (!settledAt || String(settledAt).trim() === '')) {
       updateObj.settledAt = new Date().toISOString().slice(0, 10);
     } else if (settledAt) {
@@ -1031,7 +1041,7 @@ app.post('/api/orders/approve', authenticate, requireSession, async (req, res) =
     const rowIndex = rows.findIndex(row => row[0] === orderId);
     if (!order && rowIndex > 0) order = { adminId: rows[rowIndex][12], status: rows[rowIndex][10] };
     if (!order) return res.status(404).json({ success: false, message: 'Booking not found.' });
-    if (!actor.isMaster && order.adminId !== actor.adminId) return res.status(403).json({ success: false, message: 'Only the owning admin can approve this booking.' });
+    if (!actor.isMaster && !sameOwner(order.adminId, actor.adminId)) return res.status(403).json({ success: false, message: 'Only the owning admin can approve this booking.' });
     const hasPackages = Array.isArray(order.deliveryPackages) && order.deliveryPackages.length > 0;
     const approvedStatus = hasPackages ? 'Out for Delivery' : 'Booked';
     const deliveryPackages = hasPackages
@@ -1087,9 +1097,25 @@ app.post('/api/orders/settle', authenticate, requireSession, async (req, res) =>
       const custRef = db.collection('customers').doc(customerId);
       const doc = await custRef.get();
       if (doc.exists) {
-        await custRef.update({ totalSettled: (doc.data().totalSettled || 0) + amount });
+        await custRef.update({ totalSettled: (doc.data().totalSettled || 0) + Number(amount) });
       }
-    }, `settle customer ${customerId}`);
+      const ordRef = db.collection('orders').doc(orderId);
+      const ordDoc = await ordRef.get();
+      if (ordDoc.exists) {
+        const orderData = ordDoc.data();
+        const currentSettled = Number(orderData.settledAmount || 0);
+        const newSettled = currentSettled + Number(amount);
+        const payable = Number(orderData.payableAmount || 0);
+        const advance = Number(orderData.advancePaid || 0);
+        const fullySettled = (advance + newSettled) >= payable;
+        const patch = { settledAmount: newSettled };
+        if (fullySettled) {
+          patch.status = 'Settled';
+          if (!orderData.settledAt) patch.settledAt = new Date().toISOString().slice(0, 10);
+        }
+        await ordRef.update(patch);
+      }
+    }, `settle customer ${customerId} and order ${orderId}`);
 
     await ensureSheetTab('Settlements', ['Order ID', 'Customer ID', 'Customer Name', 'Settled Amount', 'Payment Note', 'Timestamp']);
     await sheets.spreadsheets.values.append({
