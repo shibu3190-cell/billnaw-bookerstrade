@@ -53,7 +53,7 @@ test('loading overlay remains visible while nested async actions are still activ
     appLoadingRequestCount: 0
   };
 
-  vm.runInNewContext(`let appLoadingRequestCount = 0; ${functionSource};`, context);
+  vm.runInNewContext(`let appLoadingRequestCount = 0; function isAppUpdatePending() { return false; } ${functionSource};`, context);
   context.setAppLoadingState('Loading data...', true);
   context.setAppLoadingState('Syncing data...', true);
   context.setAppLoadingState('Saving...', false);
@@ -112,7 +112,7 @@ test('loading overlay clears stale text after the final request finishes', () =>
     appLoadingRequestCount: 1
   };
 
-  vm.runInNewContext(`let appLoadingRequestCount = 1; ${functionSource};`, context);
+  vm.runInNewContext(`let appLoadingRequestCount = 1; function isAppUpdatePending() { return false; } ${functionSource};`, context);
   context.setAppLoadingState('Saving...', false);
 
   assert.equal(overlay.hidden, true, 'The overlay should hide and clear its label when the final request ends.');
@@ -172,10 +172,34 @@ test('overlay reset clears stale request counters so the loader can recover', ()
     appLoadingRequestCount: 3
   };
 
-  vm.runInNewContext(`appLoadingRequestCount = 3; ${functionSource}; resetLoadingOverlay();`, context);
+  vm.runInNewContext(`function isAppUpdatePending() { return false; } appLoadingRequestCount = 3; ${functionSource}; resetLoadingOverlay();`, context);
 
   assert.equal(context.appLoadingRequestCount, 0, 'The stale loader counter should be cleared during a reset.');
   assert.equal(overlay.hidden, true, 'The overlay should be fully reset and hidden.');
   assert.equal(overlay.attributes['aria-busy'], 'false');
   assert.equal(textNode.textContent, '', 'The stale loading label should be cleared.');
+});
+
+test('app update keeps its full-screen loader active during requests', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../frontend/app.js'), 'utf8');
+  const start = source.indexOf('function setAppLoadingState');
+  const end = source.indexOf('function setButtonLoadingState');
+  const functionSource = source.slice(start, end).trim();
+  const updateMessages = [];
+  const context = { updateMessages };
+  const remainingRequests = vm.runInNewContext(`
+    let appLoadingRequestCount = 2;
+    function isAppUpdatePending() { return true; }
+    function showAppUpdateOverlay(message) { updateMessages.push(message); }
+    ${functionSource}
+    setAppLoadingState('Saving...', true);
+    setAppLoadingState('Saving...', false);
+    appLoadingRequestCount;
+  `, context);
+
+  assert.equal(remainingRequests, 2, 'Ordinary requests must not change the update loader request counter.');
+  assert.deepEqual(updateMessages, [
+    'Updating application and syncing data...',
+    'Updating application and syncing data...'
+  ]);
 });

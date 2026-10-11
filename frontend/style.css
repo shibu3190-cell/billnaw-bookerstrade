@@ -272,6 +272,17 @@ body {
   min-width: min(260px, calc(100vw - 32px));
 }
 
+.app-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.app-update-actions[hidden] {
+  display: none;
+}
+
 .app-loading-overlay.compact .app-loading-card {
   min-width: 0;
   width: 100%;
@@ -765,6 +776,19 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
   background: var(--accent-cyan);
   font-weight: 700;
   cursor: pointer;
+}
+#app-update-banner button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+@media (max-width: 520px) {
+  #app-update-banner {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-wrap: wrap;
+  }
 }
 
 .form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 10px; }

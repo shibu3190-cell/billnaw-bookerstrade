@@ -9,6 +9,7 @@
     (function () {
       function forceHideOverlay() {
         try {
+          if (localStorage.getItem('dt_app_update_pending') === 'true') return;
           const overlay = document.getElementById('app-loading-overlay');
           if (!overlay) return;
           overlay.setAttribute('aria-busy', 'false');
@@ -35,9 +36,9 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon.svg" />
 
-  <link rel="stylesheet" href="style.css?v=20261010" />
-  <script defer src="csv.js?v=20261010"></script>
-  <script defer src="app.js?v=20261011"></script>
+  <link rel="stylesheet" href="style.css?v=20261011-2" />
+  <script defer src="csv.js?v=20261011"></script>
+  <script defer src="app.js?v=20261011-2"></script>
 </head>
 <body>
 
@@ -45,6 +46,10 @@
   <div class="app-loading-card">
     <div class="app-loading-spinner"></div>
     <div class="app-loading-text"></div>
+    <div id="app-update-actions" class="app-update-actions" hidden>
+      <button type="button" class="btn btn-primary btn-sm" onclick="retryAppUpdateCloudRefresh()">Retry cloud refresh</button>
+      <button type="button" class="btn btn-subtle btn-sm" onclick="continueAfterAppUpdateOffline()">Continue offline</button>
+    </div>
   </div>
 </div>
 
@@ -883,7 +888,7 @@
 </div>
 
   <div id="app-update-banner" role="status" hidden>
-    <span>A new app version is available.</span>
+    <span>A new app version is available. Update now to clear old app files and refresh cloud data.</span>
     <button type="button" onclick="applyAppUpdate()">Update now</button>
   </div>
 

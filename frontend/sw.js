@@ -1,4 +1,5 @@
-const CACHE_NAME = 'devicetrade-v2026-10-11-1';
+const CACHE_NAME = 'devicetrade-v2026-10-11-2';
+const APP_CACHE_PREFIX = 'devicetrade-';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -24,30 +25,48 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
-  if (event.data?.type === 'CACHE_VERSION_UPDATED') {
-    caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
-    self.skipWaiting();
+  if (event.data?.type === 'CLEAR_AND_ACTIVATE' || event.data?.type === 'CACHE_VERSION_UPDATED') {
+    event.waitUntil(
+      caches.keys()
+        .then((keys) => Promise.all(keys
+          .filter((key) => key.startsWith(APP_CACHE_PREFIX) && key !== CACHE_NAME)
+          .map((key) => caches.delete(key))))
+        .then(() => self.skipWaiting())
+    );
   }
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.map((k) => k !== CACHE_NAME && caches.delete(k)))
-    )
+      Promise.all(keys.filter((key) => key.startsWith(APP_CACHE_PREFIX) && key !== CACHE_NAME)
+        .map((key) => caches.delete(key)))
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
 
-  const isAppAsset = /(?:\.js|\.css|\.html|\.json|\.png|\.svg|\.ico|\.webmanifest)$/.test(requestUrl.pathname)
+  const isAppAsset = /\.(?:js|css|html|json|png|svg|ico|webmanifest)$/i.test(requestUrl.pathname)
     || requestUrl.pathname.endsWith('/')
     || requestUrl.pathname.endsWith('/index.html');
 
   if (event.request.method !== 'GET') return;
+
+  if (requestUrl.pathname.includes('/api/')) {
+    event.respondWith(
+      fetch(event.request).catch(() => new Response(JSON.stringify({
+        success: false,
+        message: 'Backend unavailable. Check the server URL and try again.'
+      }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' }
+      }))
+    );
+    return;
+  }
 
   if (isAppAsset) {
     event.respondWith(
@@ -80,16 +99,6 @@ self.addEventListener('fetch', (event) => {
       .catch(async () => {
         const cachedResponse = await caches.match(event.request);
         if (cachedResponse) return cachedResponse;
-
-        if (requestUrl.pathname.includes('/api/')) {
-          return new Response(JSON.stringify({
-            success: false,
-            message: 'Backend unavailable. Check the server URL and try again.'
-          }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
 
         throw new Error('Network request failed and no cached response exists.');
       })

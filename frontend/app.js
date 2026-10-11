@@ -2,10 +2,36 @@
  * DeviceTrade Pro - Production Client Controller & Exporter
  */
 
-const APP_CACHE_VERSION = '2026-10-10-2';
+const APP_UPDATE_PENDING_KEY = 'dt_app_update_pending';
 const APP_GLOBAL_LOADING_DISABLED = false;
 
+function isAppUpdatePending() {
+  try {
+    return localStorage.getItem(APP_UPDATE_PENDING_KEY) === 'true';
+  } catch (error) {
+    return false;
+  }
+}
+
+function showAppUpdateOverlay(message, showActions = false) {
+  const overlay = document.getElementById('app-loading-overlay');
+  const text = overlay?.querySelector('.app-loading-text');
+  const actions = document.getElementById('app-update-actions');
+  const spinner = overlay?.querySelector('.app-loading-spinner');
+  if (!overlay || !text) return;
+  overlay.classList.remove('compact');
+  text.textContent = message;
+  overlay.hidden = false;
+  overlay.setAttribute('aria-busy', String(!showActions));
+  if (spinner) spinner.hidden = showActions;
+  if (actions) actions.hidden = !showActions;
+}
+
 function forceOverlayHiddenOnStartup() {
+  if (isAppUpdatePending()) {
+    showAppUpdateOverlay('Installing update and refreshing cloud data...');
+    return;
+  }
   const overlay = document.getElementById('app-loading-overlay');
   if (!overlay) return;
   overlay.classList.remove('compact');
@@ -17,28 +43,6 @@ function forceOverlayHiddenOnStartup() {
 
 window.addEventListener('DOMContentLoaded', forceOverlayHiddenOnStartup, { once: true });
 window.addEventListener('pageshow', forceOverlayHiddenOnStartup, { once: true });
-
-async function ensureFreshAppCache() {
-  if (!('caches' in window) || !('localStorage' in window)) return;
-
-  const cacheKey = 'dt_app_cache_version';
-  const currentVersion = localStorage.getItem(cacheKey);
-  if (currentVersion === APP_CACHE_VERSION) return;
-
-  try {
-    const names = await caches.keys();
-    await Promise.all(names.map(name => caches.delete(name)));
-    localStorage.setItem(cacheKey, APP_CACHE_VERSION);
-    if (navigator.serviceWorker?.controller) {
-      navigator.serviceWorker.controller.postMessage({ type: 'CACHE_VERSION_UPDATED', version: APP_CACHE_VERSION });
-    }
-  } catch (error) {
-    console.warn('Unable to clear cached app assets:', error);
-    localStorage.setItem(cacheKey, APP_CACHE_VERSION);
-  }
-}
-
-ensureFreshAppCache();
 
 const APP_CAN_USE_PWA = window.location.protocol === 'http:' || window.location.protocol === 'https:' || window.location.protocol === 'localhost:';
 if (APP_CAN_USE_PWA) {
@@ -66,6 +70,11 @@ if (APP_CAN_USE_PWA && 'serviceWorker' in navigator) {
         const banner = document.getElementById('app-update-banner');
         if (banner) banner.hidden = false;
       };
+      const checkForUpdates = () => {
+        if (document.visibilityState === 'visible') {
+          registration.update().catch(error => console.warn('App update check failed:', error.message));
+        }
+      };
       if (registration.waiting) showUpdate(registration.waiting);
       registration.addEventListener('updatefound', () => {
         const worker = registration.installing;
@@ -73,12 +82,27 @@ if (APP_CAN_USE_PWA && 'serviceWorker' in navigator) {
           if (worker.state === 'installed' && navigator.serviceWorker.controller) showUpdate(worker);
         });
       });
+      window.addEventListener('focus', checkForUpdates);
+      window.setInterval(checkForUpdates, 5 * 60 * 1000);
     }).catch(err => console.warn('SW error:', err));
   });
 }
 
 function applyAppUpdate() {
-  if (waitingServiceWorker) waitingServiceWorker.postMessage({ type: 'SKIP_WAITING' });
+  if (!waitingServiceWorker) return;
+  try {
+    localStorage.setItem(APP_UPDATE_PENDING_KEY, 'true');
+  } catch (error) {
+    console.warn('Unable to remember the pending app update:', error);
+  }
+  const banner = document.getElementById('app-update-banner');
+  const button = banner?.querySelector('button');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Updating...';
+  }
+  showAppUpdateOverlay('Installing update and refreshing cloud data...');
+  waitingServiceWorker.postMessage({ type: 'CLEAR_AND_ACTIVATE' });
 }
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -123,6 +147,7 @@ let storageDb = null;
 let offlineOutbox = [];
 let cloudSyncInFlight = null;
 let isFlushingOfflineQueue = false;
+let lastCloudSyncError = null;
 let directDeliveryEntry = false;
 let directDeliveryPackageIndex = 0;
 
@@ -303,7 +328,7 @@ async function dispatchToBackend(endpoint, payload) {
 
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
-      if (res.status === 401 && errorBody.message === 'An active login session is required.') {
+      if (isSessionUnauthorized(res.status, errorBody.message)) {
         await logoutApp();
       }
       const error = new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
@@ -325,10 +350,17 @@ async function dispatchToBackend(endpoint, payload) {
   }
 }
 
-async function fetchFromBackend(endpoint) {
+function isSessionUnauthorized(status, message) {
+  return status === 401 && (
+    message === 'An active login session is required.'
+    || (AppState.sessionToken && message === 'Unauthorized request.')
+  );
+}
+
+async function fetchFromBackend(endpoint, { silentLoading = false } = {}) {
   const timeout = withRequestTimeout();
   const compactLoading = endpoint.includes('/auth/login') || endpoint.includes('/admin/sheets/data?page=1&pageSize=50');
-  setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true, compactLoading);
+  if (!silentLoading) setAppLoadingState(endpoint.includes('/admin/') ? 'Loading data...' : 'Updating data...', true, compactLoading);
   try {
     const res = await fetch(`${API_CONFIG.baseUrl}${endpoint}`, {
       headers: {
@@ -338,7 +370,10 @@ async function fetchFromBackend(endpoint) {
       signal: timeout.controller.signal
     });
     const result = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(result.message || `HTTP ${res.status}`);
+    if (!res.ok) {
+      if (isSessionUnauthorized(res.status, result.message)) await logoutApp();
+      throw new Error(result.message || `HTTP ${res.status}`);
+    }
     return result;
   } catch (error) {
     if (error?.name === 'AbortError') {
@@ -349,11 +384,15 @@ async function fetchFromBackend(endpoint) {
     throw error;
   } finally {
     timeout.cleanup();
-    setAppLoadingState('Loading data...', false);
+    if (!silentLoading) setAppLoadingState('Loading data...', false);
   }
 }
 
 function resetLoadingOverlay() {
+  if (isAppUpdatePending()) {
+    showAppUpdateOverlay('Installing update and refreshing cloud data...');
+    return;
+  }
   appLoadingRequestCount = 0;
   const overlay = document.getElementById('app-loading-overlay');
   const text = overlay?.querySelector('.app-loading-text');
@@ -367,6 +406,10 @@ function resetLoadingOverlay() {
 window.addEventListener('pageshow', resetLoadingOverlay);
 
 function setAppLoadingState(message = 'Saving...', visible = true, compact = false) {
+  if (isAppUpdatePending()) {
+    showAppUpdateOverlay('Updating application and syncing data...');
+    return;
+  }
   if (typeof APP_GLOBAL_LOADING_DISABLED !== 'undefined' && APP_GLOBAL_LOADING_DISABLED) {
     resetLoadingOverlay();
     return;
@@ -440,13 +483,13 @@ function csvOrNumber(value) {
 }
 
 async function syncCloudData(showResult = false) {
-  if (!showResult && hasPendingSyncForCurrentUser()) return;
+  if (!showResult && hasPendingSyncForCurrentUser()) return false;
   if (cloudSyncInFlight && !showResult) return cloudSyncInFlight;
   if (showResult) setDataManagementStatus('Importing Google Sheet data...');
   const exportEndpoint = (showResult ? '/admin/sheets/data' : '/admin/data/export') + '?page=1&pageSize=50';
   const syncRequest = (async () => {
     try {
-    const result = await fetchFromBackend(exportEndpoint);
+    const result = await fetchFromBackend(exportEndpoint, { silentLoading: !showResult });
     const data = result.data || {};
     const admins = data.admins || [];
     const customers = data.customers || [];
@@ -573,17 +616,21 @@ async function syncCloudData(showResult = false) {
 
     persistLocalState();
     renderAllViews();
+    lastCloudSyncError = null;
     if (showResult) {
       setDataManagementStatus(`Imported ${admins.length} admins, ${customers.length} bookers, ${products.length} products, and ${orders.length} orders.`);
       alert('Google Sheet data imported successfully.');
     }
+    return true;
     } catch (error) {
+    lastCloudSyncError = error;
     if (showResult) {
       setDataManagementStatus(error.message, true);
       alert(`Google Sheet import failed: ${error.message}`);
     } else {
       console.warn('Background cloud sync failed:', error.message);
     }
+    return false;
     }
   })();
   if (showResult) return syncRequest;
@@ -969,11 +1016,47 @@ async function clearPersistedSession() {
   localStorage.removeItem('dt_session');
 }
 
+async function refreshCloudAfterAppUpdate() {
+  if (!isAppUpdatePending()) return;
+  showAppUpdateOverlay('Refreshing cloud data...');
+  try {
+    await flushOfflineQueue();
+    if (AppState.currentUser && navigator.onLine) {
+      showAppUpdateOverlay('Refreshing cloud data...');
+      const refreshed = await syncCloudData();
+      if (!AppState.currentUser) {
+        localStorage.removeItem(APP_UPDATE_PENDING_KEY);
+        resetLoadingOverlay();
+        return;
+      }
+      if (!refreshed) {
+        throw lastCloudSyncError || new Error('Pending local changes could not be synchronized. Your local data has been preserved.');
+      }
+    } else if (AppState.currentUser) {
+      throw new Error('You are offline. Your local data has been preserved; cloud data was not refreshed.');
+    }
+    localStorage.removeItem(APP_UPDATE_PENDING_KEY);
+    resetLoadingOverlay();
+  } catch (error) {
+    console.warn('App update cloud refresh failed:', error.message);
+    showAppUpdateOverlay(`Update installed, but cloud refresh failed: ${error.message}`, true);
+  }
+}
+
+function continueAfterAppUpdateOffline() {
+  localStorage.removeItem(APP_UPDATE_PENDING_KEY);
+  resetLoadingOverlay();
+}
+
+function retryAppUpdateCloudRefresh() {
+  return refreshCloudAfterAppUpdate();
+}
+
 function startCloudSync() {
   if (cloudSyncTimer) clearInterval(cloudSyncTimer);
   cloudSyncTimer = setInterval(() => {
     if (AppState.currentUser && navigator.onLine) syncCloudData().catch(() => {});
-  }, 15000);
+  }, 60000);
 }
 
 function todayIsoDate() {
@@ -3289,10 +3372,17 @@ appStateReady.then(async () => {
   if (!savedSession) {
     try { savedSession = JSON.parse(localStorage.getItem('dt_session') || 'null'); } catch (error) { savedSession = null; }
   }
-  if (!savedSession?.user || !savedSession.token) return;
+  if (!savedSession?.user || !savedSession.token) {
+    if (isAppUpdatePending()) continueAfterAppUpdateOffline();
+    return;
+  }
   AppState.currentUser = savedSession.user;
   AppState.sessionToken = savedSession.token;
   showAuthenticatedView();
   await flushOfflineQueue();
+  if (isAppUpdatePending()) {
+    await refreshCloudAfterAppUpdate();
+    return;
+  }
   await syncCloudData();
 });
