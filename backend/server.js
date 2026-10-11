@@ -5,7 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { google } = require('googleapis');
-const { allocateDeliveryPackageIdentity } = require('./delivery-packages');
+const { allocateDeliveryPackageIdentity, buildDeliveryPackageTag, dedupeDeliveryPackages } = require('./delivery-packages');
 const { paginateRecords, normalizePageNumber, normalizePageSize } = require('./data-pagination');
 const { createRequireSession, isMasterAdminSession } = require('./account-access');
 const { canAccessOrder, canUseProduct } = require('./order-access');
@@ -815,10 +815,20 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
         const freshSnapshot = await transaction.get(orderRef);
         if (!freshSnapshot.exists) throw new Error('Booking not found.');
         const current = freshSnapshot.data();
-        const packages = Array.isArray(current.deliveryPackages) ? current.deliveryPackages : [];
-        const identity = allocateDeliveryPackageIdentity(packages, packageId, current.quantity);
+        const packages = dedupeDeliveryPackages(current.deliveryPackages, { orderId, customerId: current.customerId });
+        const identity = allocateDeliveryPackageIdentity(packages, packageId, current.quantity, {
+          orderId,
+          customerId: current.customerId
+        });
         persistedPackage.sequence = identity.sequence;
         persistedPackage.doNumber = identity.doNumber;
+        persistedPackage.packageTag = buildDeliveryPackageTag({
+          customerId: current.customerId,
+          deliveryDate: persistedPackage.delivery?.deliveryDate || persistedPackage.submittedAt,
+          orderId,
+          sequence: identity.sequence,
+          doNumber: identity.doNumber
+        });
         if (identity.existingIndex >= 0) packages[identity.existingIndex] = persistedPackage;
         else packages.push(persistedPackage);
         const patch = {
@@ -835,12 +845,12 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
 
       await ensureSheetTab('Delivery_Packages', [
         'Package ID', 'Order ID', 'Platform', 'Model', 'Recipient Name', 'Mobile',
-        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status', 'Delivery No', 'Sequence', 'Delivery Date'
+        'Tracking AWB', 'OTP', 'Pincode', 'GSTIN', 'Shop Name', 'Base Amount', 'GST Tax Amount', 'Gross Total', 'Timestamp', 'Status', 'Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag'
       ]);
-      const existingHeaders = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:S1' }).catch(() => ({ data: { values: [] } }));
+      const existingHeaders = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1' }).catch(() => ({ data: { values: [] } }));
       const headers = existingHeaders.data.values?.[0] || [];
-      if (headers[0] !== 'Delivery No' || headers[1] !== 'Sequence' || headers[2] !== 'Delivery Date') {
-        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:S1', valueInputOption: 'RAW', resource: { values: [['Delivery No', 'Sequence', 'Delivery Date']] } });
+      if (headers[0] !== 'Delivery No' || headers[1] !== 'Sequence' || headers[2] !== 'Delivery Date' || headers[3] !== 'Delivery Tag') {
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!Q1:T1', valueInputOption: 'RAW', resource: { values: [['Delivery No', 'Sequence', 'Delivery Date', 'Delivery Tag']] } });
       }
       const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:A' });
       const packageRow = (sheetData.data.values || []).findIndex(row => row[0] === packageId);
@@ -851,14 +861,14 @@ app.post('/api/orders/delivery', authenticate, requireSession, async (req, res) 
         persistedPackage.gstDetails?.gstNumber || 'N/A', persistedPackage.gstDetails?.shopName || 'N/A',
         persistedPackage.gstDetails?.baseAmount || 0, persistedPackage.gstDetails?.gstAmount || 0,
         persistedPackage.gstDetails?.totalAmount || 0, persistedPackage.submittedAt, persistedPackage.status,
-        persistedPackage.doNumber, persistedPackage.sequence, persistedPackage.delivery.deliveryDate || ''
+        persistedPackage.doNumber, persistedPackage.sequence, persistedPackage.delivery.deliveryDate || '', persistedPackage.packageTag
       ]];
       if (packageRow > 0) {
-        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:S${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+        await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: `Delivery_Packages!A${packageRow + 1}:T${packageRow + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
       } else {
-        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:S', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
+        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:T', valueInputOption: 'USER_ENTERED', resource: { values: packageValues } });
       }
-      return res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
+      return res.json({ success: true, packageId, sequence: persistedPackage.sequence, doNumber: persistedPackage.doNumber, packageTag: persistedPackage.packageTag, file: persistedPackage.gstDetails?.fileId ? persistedPackage.gstDetails : null, deletedFileIds: uploaded.deletedFileIds || [] });
     }
 
     const uploadedInvoice = await uploadInvoiceFile(gstDetails, orderId);
@@ -1550,7 +1560,7 @@ app.get('/api/admin/sheets/data', authenticate, requireSession, async (req, res)
       }
     }
     try {
-      const packageResult = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:S' });
+      const packageResult = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Delivery_Packages!A:T' });
       const visibleOrderIds = new Set((response.orders || []).map(record =>
         String(record['Order ID'] || record.orderId || record.id || '').trim()).filter(Boolean));
       const packageRecords = sheetRowsToObjects(packageResult.data.values || []).filter(record =>

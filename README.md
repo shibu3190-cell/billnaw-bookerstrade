@@ -49,6 +49,7 @@ Do not put real passwords in this README or in frontend files. The frontend only
 - Admin and booker Sheets rows include active state, ownership IDs, and session versions used to invalidate old sessions.
 - Product catalog CSV files use `Product ID,Product Name,Target Price,Commission,Admin ID,Active`; quoted commas and newlines are supported.
 - Order sheets keep `Product ID` in column N so existing ownership data in earlier columns remains in place.
+- Delivery packages receive a per-order `DO1`, `DO2`, … sequence and a day/booker/order delivery tag. The booking pipeline counts each order and its net due once, while delivery exports retain one row per package.
 - API requests require the configured API token; privileged lifecycle operations also require a server-issued login session.
 - Background cloud refreshes run once per minute without blocking the workspace. A service-worker update displays an `Update now` prompt; accepting it clears old app caches, installs the new app, and refreshes cloud data. Unsent changes and local business data are preserved. If cloud refresh fails, retry it or continue offline.
 - For each frontend release, change the service worker `CACHE_NAME` in `frontend/sw.js`. This lets already-open apps detect the release and offer the update prompt; the asset query versions in `frontend/index.html` should also be advanced when their files change.

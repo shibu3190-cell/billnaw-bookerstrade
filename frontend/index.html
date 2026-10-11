@@ -36,9 +36,9 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon.svg" />
 
-  <link rel="stylesheet" href="style.css?v=20261011-2" />
+  <link rel="stylesheet" href="style.css?v=20261011-3" />
   <script defer src="csv.js?v=20261011"></script>
-  <script defer src="app.js?v=20261011-2"></script>
+  <script defer src="app.js?v=20261011-3"></script>
 </head>
 <body>
 
@@ -511,6 +511,16 @@
           </table>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal-delivery-details">
+    <div class="modal-window wide">
+      <div class="modal-header">
+        <div class="modal-title" id="delivery-details-title">Delivery details</div>
+        <button class="modal-close" onclick="closeModal('modal-delivery-details')">&times;</button>
+      </div>
+      <div id="delivery-details-body" class="delivery-details-grid"></div>
     </div>
   </div>
 

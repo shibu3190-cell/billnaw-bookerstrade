@@ -34,6 +34,33 @@ test('deduplicates repeated parcel rows before export or display', () => {
   assert.deepEqual(deduped.map(item => item.doNumber), ['DO1', 'DO2']);
 });
 
+test('does not collapse distinct unnumbered legacy packages', () => {
+  const rows = [
+    { id: 'pkg-a', orderId: 'OD-101', customerId: 'cust-014', delivery: { deliveryDate: '2026-10-11' } },
+    { id: 'pkg-b', orderId: 'OD-101', customerId: 'cust-014', delivery: { deliveryDate: '2026-10-11' } }
+  ];
+  assert.equal(dedupeDeliveryPackages(rows).length, 2);
+});
+
+test('deduplicates a repeated DO from different source rows using order context', () => {
+  const rows = [
+    { id: 'sheet-copy-1', sequence: 1, doNumber: 'DO1', delivery: { deliveryDate: '2026-10-11' } },
+    { id: 'sheet-copy-2', sequence: 1, doNumber: 'DO1', delivery: { deliveryDate: '2026-10-11' } },
+    { id: 'second-package', sequence: 2, doNumber: 'DO2', delivery: { deliveryDate: '2026-10-11' } }
+  ];
+  assert.equal(dedupeDeliveryPackages(rows, { orderId: 'OD-101', customerId: 'cust-014' }).length, 2);
+});
+
+test('keeps day and booker tag in stable unique package identity', () => {
+  const tag = buildDeliveryPackageTag({
+    customerId: 'cust-014',
+    deliveryDate: '2026-10-11T10:30:00.000Z',
+    orderId: 'OD-101',
+    sequence: 2
+  });
+  assert.equal(tag, 'day-2026-10-11|booker-cust-014|order-OD-101|do-2');
+});
+
 test('preserves a package tag when the same package is retried', () => {
   const packages = [{ id: 'pkg-a', sequence: 3, doNumber: 'DO3' }];
   assert.deepEqual(allocateDeliveryPackageIdentity(packages, 'pkg-a', 3), {

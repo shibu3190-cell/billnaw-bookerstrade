@@ -568,6 +568,7 @@ async function syncCloudData(showResult = false) {
           id: packageId,
           sequence: Number(record.Sequence || record.sequence) || 0,
           doNumber: String(record['Delivery No'] || record.doNumber || '').trim(),
+          packageTag: String(record['Delivery Tag'] || record.packageTag || '').trim(),
           delivery: {
             platform: record.Platform || record.platform || 'Other',
             recipientName: record['Recipient Name'] || record.recipientName || '',
@@ -593,7 +594,7 @@ async function syncCloudData(showResult = false) {
         if (!packagesByOrder.has(orderId)) packagesByOrder.set(orderId, []);
         packagesByOrder.get(orderId).push(importedPackage);
       });
-      AppState.orders = AppState.orders.map(order => {
+      AppState.orders = dedupeOrderRecords(AppState.orders.map(order => {
         const sheetPackages = packagesByOrder.get(order.id);
         if (!sheetPackages?.length) return normalizeOrder(order);
         const existingPackages = new Map((order.deliveryPackages || []).map(packageEntry => [packageEntry.id, packageEntry]));
@@ -604,6 +605,7 @@ async function syncCloudData(showResult = false) {
             ...existingPackage,
             sequence: Number(existingPackage.sequence) || importedPackage.sequence,
             doNumber: existingPackage.doNumber || importedPackage.doNumber,
+            packageTag: existingPackage.packageTag || importedPackage.packageTag,
             delivery: { ...importedPackage.delivery, ...(existingPackage.delivery || {}) },
             gstDetails: existingPackage.gstDetails || importedPackage.gstDetails
           });
@@ -611,7 +613,7 @@ async function syncCloudData(showResult = false) {
         const deliveryPackages = [...existingPackages.values()].sort((left, right) =>
           (Number(left.sequence) || 0) - (Number(right.sequence) || 0));
         return normalizeOrder({ ...order, deliveryPackages });
-      });
+      }));
     }
 
     persistLocalState();
@@ -724,6 +726,7 @@ function applyCloudInvoiceResult(order, result) {
     if (packageEntry) {
       packageEntry.sequence = Number(result.sequence) || packageEntry.sequence;
       packageEntry.doNumber = result.doNumber || `DO${packageEntry.sequence}`;
+      packageEntry.packageTag = result.packageTag || deliveryPackageTag(order, packageEntry);
     }
   }
   persistLocalState();
@@ -1067,6 +1070,67 @@ function getInvoiceDate(order) {
   return String(order.gstDetails?.uploadedAt || order.delivery?.submittedAt || order.createdAt || '').slice(0, 10);
 }
 
+function deliveryPackageTag(order, packageEntry) {
+  const deliveryDate = String(packageEntry.delivery?.deliveryDate
+    || packageEntry.delivery?.submittedAt
+    || packageEntry.submittedAt
+    || order.createdAt
+    || todayIsoDate()).slice(0, 10);
+  const sequence = Number(packageEntry.sequence)
+    || Number(String(packageEntry.doNumber || '').match(/^DO(\d+)$/i)?.[1])
+    || 0;
+  const bookerId = String(order.customerId || '').trim() || 'shared';
+  return `day-${deliveryDate}|booker-${bookerId}|order-${order.id || 'order'}|do-${sequence}`;
+}
+
+function dedupeOrderPackages(order, packages) {
+  const byIdentity = new Map();
+  const seenIds = new Set();
+  const seenTags = new Set();
+  (Array.isArray(packages) ? packages : []).forEach((packageEntry, index) => {
+    const sequence = Number(packageEntry.sequence)
+      || Number(String(packageEntry.doNumber || '').match(/^DO(\d+)$/i)?.[1])
+      || index + 1;
+    const normalized = {
+      ...packageEntry,
+      sequence,
+      doNumber: packageEntry.doNumber || `DO${sequence}`
+    };
+    const id = String(normalized.id || '').trim();
+    const tag = deliveryPackageTag(order, normalized);
+    if ((id && seenIds.has(id)) || (sequence > 0 && seenTags.has(tag))) return;
+    if (id) seenIds.add(id);
+    if (sequence > 0) seenTags.add(tag);
+    normalized.packageTag = tag;
+    byIdentity.set(id || tag, normalized);
+  });
+  return [...byIdentity.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+function dedupeOrderRecords(orders) {
+  const unique = new Map();
+  (Array.isArray(orders) ? orders : []).forEach(order => {
+    const id = String(order.id || '').trim();
+    if (!id) return;
+    const previous = unique.get(id);
+    if (!previous) {
+      unique.set(id, order);
+      return;
+    }
+    const merged = { ...previous, ...order };
+    merged.deliveryPackages = dedupeOrderPackages(merged, [
+      ...(previous.deliveryPackages || []),
+      ...(order.deliveryPackages || [])
+    ]);
+    unique.set(id, merged);
+  });
+  return [...unique.values()];
+}
+
+function getOrderNetDue(order) {
+  return csvOrNumber(order.payableAmount) - csvOrNumber(order.advancePaid) - csvOrNumber(order.settledAmount);
+}
+
 function normalizeOrder(order) {
   const delivery = order.delivery ? {
     ...order.delivery,
@@ -1092,7 +1156,7 @@ function normalizeOrder(order) {
     quantity: Math.max(1, Number(order.quantity) || 1),
     createdAt: order.createdAt || todayIsoDate(),
     delivery,
-    deliveryPackages: (Array.isArray(order.deliveryPackages) ? order.deliveryPackages : []).map((packageEntry, index) => {
+    deliveryPackages: dedupeOrderPackages(order, (Array.isArray(order.deliveryPackages) ? order.deliveryPackages : []).map((packageEntry, index) => {
       const sequence = Number(packageEntry.sequence) || index + 1;
       return {
         ...packageEntry,
@@ -1108,7 +1172,7 @@ function normalizeOrder(order) {
           deliveryDate: packageEntry.delivery.deliveryDate || packageEntry.delivery.submittedAt || order.createdAt || todayIsoDate()
         } : null
       };
-    }),
+    })),
     isToday: delivery?.deliveryDate === todayIsoDate(),
     gstDetails: order.gstDetails || null
   };
@@ -1125,12 +1189,12 @@ function getEffectiveAdminScopeId() {
 function getVisibleOrders() {
   if (!AppState.currentUser) return [];
   if (AppState.currentUser.role !== 'admin') {
-    return AppState.orders.filter(order => order.customerId === AppState.currentUser.customerId);
+    return dedupeOrderRecords(AppState.orders.filter(order => order.customerId === AppState.currentUser.customerId));
   }
   const currentScope = getEffectiveAdminScopeId();
   if (!currentScope) return [];
-  if (AppState.currentUser.isMaster) return AppState.orders.filter(order => sameAdminId(order.adminId, currentScope));
-  return AppState.orders.filter(order => sameAdminId(order.adminId, AppState.currentUser.adminId));
+  if (AppState.currentUser.isMaster) return dedupeOrderRecords(AppState.orders.filter(order => sameAdminId(order.adminId, currentScope)));
+  return dedupeOrderRecords(AppState.orders.filter(order => sameAdminId(order.adminId, AppState.currentUser.adminId)));
 }
 
 function getOrderProfit(order) {
@@ -1533,7 +1597,7 @@ function renderKPIs() {
   const settled = list.filter(o => o.status === 'Settled');
 
   const activeVol = active.reduce((s, o) => s + o.amountPaid, 0);
-  const totalDue = active.reduce((s, o) => s + (o.payableAmount - (o.advancePaid || 0) - (o.settledAmount || 0)), 0);
+  const totalDue = active.reduce((s, o) => s + getOrderNetDue(o), 0);
 
   const homeGrid = document.getElementById('home-kpi-grid');
   if (!homeGrid) return;
@@ -1567,7 +1631,7 @@ function showActiveBookings() {
 }
 
 function packageProgressLabel(order) {
-  const packages = Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [];
+  const packages = dedupeOrderPackages(order, order.deliveryPackages || []);
   if (packages.length === 0) return '';
   const delivered = packages.filter(item => item.status === 'Delivered').length;
   return `Packages ${packages.length}/${order.quantity || 1} saved${delivered ? `, ${delivered} delivered` : ''}`;
@@ -1582,8 +1646,59 @@ function openOrderDeliveryPackages(orderId) {
   renderDeliveryTable();
 }
 
+function openDeliveryPackageDetails(orderId, packageId = '') {
+  const order = AppState.orders.find(item => item.id === orderId);
+  const packageEntry = packageId
+    ? order?.deliveryPackages?.find(item => item.id === packageId)
+    : null;
+  const delivery = packageEntry?.delivery || order?.delivery;
+  if (!order || !delivery) return;
+
+  const sequence = Number(packageEntry?.sequence) || 1;
+  const doNumber = packageEntry?.doNumber || `DO${sequence}`;
+  const details = [
+    ['Delivery', `${doNumber} of ${order.quantity || 1}`],
+    ['Delivery date', delivery.deliveryDate || delivery.submittedAt || order.createdAt],
+    ['Booker', order.customerName],
+    ['Booker ID', order.customerId],
+    ['Order ID', order.id],
+    ['Product', `${order.productModel} ×${order.quantity || 1}`],
+    ['Platform', delivery.platform || order.platform],
+    ['Recipient', delivery.recipientName],
+    ['Mobile', delivery.mobile],
+    ['Tracking / AWB', delivery.tracking],
+    ['OTP', delivery.otp],
+    ['Pincode', delivery.pincode],
+    ['Order amount paid', `₹${order.amountPaid.toLocaleString()}`],
+    ['Order payable total', `₹${order.payableAmount.toLocaleString()}`],
+    ['Advance taken', `₹${order.advancePaid.toLocaleString()}`],
+    ['Settled', `₹${order.settledAmount.toLocaleString()}`],
+    ['Net due', `₹${getOrderNetDue(order).toLocaleString()}`],
+    ['Delivery status', packageEntry?.status || order.status]
+  ];
+  document.getElementById('delivery-details-title').textContent = `${doNumber} · ${order.productModel}`;
+  document.getElementById('delivery-details-body').innerHTML = details.map(([label, value]) =>
+    `<div class="delivery-detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '—')}</strong></div>`
+  ).join('');
+  openModal('modal-delivery-details');
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character]);
+}
+
 function updateTodayBadge() {
-  const count = AppState.orders.filter(o => o.isToday && (o.status === 'Out for Delivery' || o.status === 'In Process')).length;
+  const count = getVisibleOrders().flatMap(order => orderDeliveryEntries(order)).filter(entry => {
+    const deliveryDate = String(entry.delivery?.deliveryDate || entry.delivery?.submittedAt || '').slice(0, 10);
+    const status = entry.status || entry.delivery?.status;
+    return deliveryDate === todayIsoDate() && ['Out for Delivery', 'In Process'].includes(status);
+  }).length;
   const badge = document.getElementById('badge-today-count');
   if (badge) badge.textContent = `${count} Shipments`;
 }
@@ -1632,7 +1747,8 @@ function renderHomeOrders() {
   }
 
   list.slice(0, 5).forEach(o => {
-    const due = o.payableAmount - (o.advancePaid || 0) - (o.settledAmount || 0);
+    const due = getOrderNetDue(o);
+    const deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
     homeTbody.innerHTML += `
       <tr>
         <td><strong>${o.id}</strong></td>
@@ -1646,7 +1762,7 @@ function renderHomeOrders() {
         <td>${o.gstDetails ? `<span class="pill pill-green">₹${o.gstDetails.gstAmount}</span>` : '-'}</td>
         <td><span class="pill pill-amber">${o.status}</span></td>
         <td>
-          ${o.deliveryPackages?.length ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View parcels</button>` : !o.delivery?.submitted ? `<button class="btn btn-primary btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Submit Delivery</button>` : `<span class="pill pill-green">✓ Out</span>`}
+          ${deliveryPackages.length ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View delivery details</button>` : !o.delivery?.submitted ? `<button class="btn btn-primary btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Submit Delivery</button>` : `<button class="btn btn-subtle btn-sm" onclick="openDeliveryPackageDetails('${o.id}')">View details</button>`}
         </td>
       </tr>
     `;
@@ -1688,7 +1804,8 @@ function renderOrdersTable() {
   }
 
   pageItems.forEach(o => {
-    const due = o.payableAmount - (o.advancePaid || 0) - (o.settledAmount || 0);
+    const due = getOrderNetDue(o);
+    const deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
     tbody.innerHTML += `
       <tr>
         <td><strong>${o.id}</strong></td>
@@ -1704,10 +1821,10 @@ function renderOrdersTable() {
         <td>
           <div style="display:flex; gap:6px;">
             ${isAdmin && o.status === 'Pending Approval' ? `<button class="btn btn-primary btn-sm" onclick="approveBooking('${o.id}')">Approve</button>` : ''}
-            ${o.deliveryPackages?.length > 0 && o.deliveryPackages.length < o.quantity ? `<button class="btn btn-subtle btn-sm" onclick="continueDirectDeliveryEntry('${o.id}')">Continue packages</button>` : ''}
-            ${o.deliveryPackages?.length > 0 ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View parcels</button>` : ''}
+            ${deliveryPackages.length > 0 && deliveryPackages.length < o.quantity ? `<button class="btn btn-subtle btn-sm" onclick="continueDirectDeliveryEntry('${o.id}')">Continue packages</button>` : ''}
+            ${deliveryPackages.length > 0 ? `<button class="btn btn-subtle btn-sm" onclick="openOrderDeliveryPackages('${o.id}')">View parcels</button>` : ''}
             ${o.status !== 'Pending Approval' && !o.delivery?.submitted ? `<button class="btn btn-subtle btn-sm" onclick="openDeliveryModalForOrder('${o.id}')">Delivery & GST</button>` : ''}
-            ${isAdmin && o.status === 'Out for Delivery' && !o.deliveryPackages?.length ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
+            ${isAdmin && o.status === 'Out for Delivery' && !deliveryPackages.length ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}')">Mark Delivered</button>` : ''}
             ${isAdmin && o.status === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
           </div>
         </td>
@@ -1724,9 +1841,10 @@ function approveBooking(orderId) {
   const triggerButton = findButtonByAction('approveBooking', orderId);
   setButtonLoadingState(triggerButton, 'Approving...', true);
   try {
-    order.status = order.deliveryPackages?.length ? 'Out for Delivery' : 'Booked';
-    if (order.deliveryPackages?.length) {
-      order.deliveryPackages = order.deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }));
+    const deliveryPackages = dedupeOrderPackages(order, order.deliveryPackages || []);
+    order.status = deliveryPackages.length ? 'Out for Delivery' : 'Booked';
+    if (deliveryPackages.length) {
+      order.deliveryPackages = deliveryPackages.map(packageEntry => ({ ...packageEntry, status: 'Out for Delivery' }));
       order.isToday = true;
     }
     order.approvedBy = AppState.currentUser.adminId;
@@ -1739,11 +1857,12 @@ function approveBooking(orderId) {
 }
 
 function orderDeliveryEntries(order) {
-  const packages = Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [];
+  const packages = dedupeOrderPackages(order, order.deliveryPackages || []);
   if (packages.length) return packages.map(packageEntry => ({
     id: packageEntry.id,
     sequence: Number(packageEntry.sequence) || 0,
     doNumber: packageEntry.doNumber || '',
+    packageTag: packageEntry.packageTag || deliveryPackageTag(order, packageEntry),
     delivery: packageEntry.delivery,
     gstDetails: packageEntry.gstDetails,
     status: packageEntry.status || (order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery'),
@@ -1767,7 +1886,11 @@ function dedupeDeliveryRows(entries) {
     const deliveryDate = String(entry?.delivery?.deliveryDate || entry?.delivery?.submittedAt || order?.createdAt || todayIsoDate()).slice(0, 10);
     const customerKey = String(order?.customerId || '').trim() || 'shared';
     const doNumber = String(entry?.doNumber || 'DO1').trim();
-    const packageKey = `${deliveryDate}|${customerKey}|${order?.id || 'legacy'}|${doNumber}|${entry?.id || entry?.packageId || 'legacy'}`;
+    const sequence = Number(entry?.sequence) || Number(doNumber.match(/^DO(\d+)$/i)?.[1]) || 0;
+    const packageKey = entry?.packageTag
+      || (sequence > 0
+        ? `day-${deliveryDate}|booker-${customerKey}|order-${order?.id || 'legacy'}|do-${sequence}`
+        : `${order?.id || 'legacy'}|package-${entry?.id || entry?.packageId || 'legacy'}`);
     if (!seen.has(packageKey)) seen.set(packageKey, entry);
   }
   return [...seen.values()];
@@ -1793,7 +1916,7 @@ function renderDeliveryTable() {
     const d = item.delivery;
     if (!isAdmin && o.customerId !== AppState.currentUser.customerId) return false;
     if (!d || !d.submitted) return false;
-    if (selectedDate && (d.deliveryDate || o.createdAt) !== selectedDate) return false;
+    if (selectedDate && String(d.deliveryDate || d.submittedAt || o.createdAt).slice(0, 10) !== selectedDate) return false;
     if (platFilter !== 'ALL' && d.platform !== platFilter) return false;
     if (search) {
       return d.pincode.includes(search) || d.tracking.toLowerCase().includes(search) || d.recipientName.toLowerCase().includes(search)
@@ -1831,9 +1954,10 @@ function renderDeliveryTable() {
         <td>${packageGst ? `<button class="btn btn-subtle btn-sm" onclick="viewGstInvoice('${o.id}', '${packageId}')">📄 View GST</button>` : 'None'}</td>
         <td><span class="pill pill-green">${deliveryStatus}</span></td>
         <td>
+          <button class="btn btn-subtle btn-sm" onclick="openDeliveryPackageDetails('${o.id}', '${packageId}')">Details</button>
           ${isAdmin && deliveryStatus === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}', '${packageId}')">Mark Delivered</button>` : ''}
           ${isAdmin && !item.packageEntry && deliveryStatus === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
-          ${isAdmin && item.packageEntry && o.status === 'Delivered' && packageId === o.deliveryPackages[o.deliveryPackages.length - 1]?.id && !String(o.customerId).startsWith('ADMIN-SELF-') ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle Order</button>` : ''}
+          ${isAdmin && item.packageEntry && o.status === 'Delivered' && packageId === dedupeOrderPackages(o, o.deliveryPackages || []).at(-1)?.id && !String(o.customerId).startsWith('ADMIN-SELF-') ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle Order</button>` : ''}
         </td>
       </tr>
     `;
@@ -1855,7 +1979,7 @@ function renderCustomersTable() {
     ? AppState.customers.filter(customer => sameAdminId(customer.adminId, currentScope || AppState.currentUser.adminId))
     : AppState.customers.filter(customer => sameAdminId(customer.adminId, AppState.currentUser.adminId));
   const filteredCustomers = customers.filter(c => {
-    const cOrders = AppState.orders.filter(o => o.customerId === c.id);
+    const cOrders = dedupeOrderRecords(AppState.orders.filter(o => o.customerId === c.id));
     if (filterState !== 'ALL' && !cOrders.some(o => o.status === filterState)) return false;
     if (search && !c.name.toLowerCase().includes(search) && !c.id.toLowerCase().includes(search)) return false;
     return true;
@@ -1873,7 +1997,7 @@ function renderCustomersTable() {
   }
 
   pageItems.forEach(c => {
-    const cOrders = AppState.orders.filter(o => o.customerId === c.id);
+    const cOrders = dedupeOrderRecords(AppState.orders.filter(o => o.customerId === c.id));
     const volume = cOrders.reduce((s, o) => s + o.amountPaid, 0);
     const advance = cOrders.reduce((s, o) => s + (o.advancePaid || 0), 0);
     const settled = c.totalSettled || 0;
@@ -2311,20 +2435,12 @@ function toggleDeliveryOtherPlatform() {
   input.required = other;
 }
 
-function getNextDirectDeliverySequence(orderOrCustomerId, deliveryDate = todayIsoDate()) {
-  const targetDate = String(deliveryDate || todayIsoDate()).slice(0, 10);
-  const customerId = typeof orderOrCustomerId === 'string' ? orderOrCustomerId : orderOrCustomerId?.customerId;
-  const maxSequence = AppState.orders
-    .filter(order => String(order.customerId || '').trim() === String(customerId || '').trim())
-    .flatMap(order => Array.isArray(order.deliveryPackages) ? order.deliveryPackages : [])
-    .map(packageEntry => {
-      const packageDate = String(packageEntry.delivery?.deliveryDate || packageEntry.delivery?.submittedAt || packageEntry.submittedAt || '').slice(0, 10);
-      if (packageDate !== targetDate) return 0;
-      const explicitNumber = Number(String(packageEntry.doNumber || packageEntry.sequence || '').replace(/\D+/g, ''));
-      return Number.isFinite(explicitNumber) ? explicitNumber : 0;
-    })
-    .reduce((max, value) => Math.max(max, value), 0);
-  return maxSequence + 1;
+function getNextDirectDeliverySequence(order) {
+  const packages = dedupeOrderPackages(order, order?.deliveryPackages || []);
+  return packages.reduce((highest, packageEntry) => Math.max(
+    highest,
+    Number(packageEntry.sequence) || Number(String(packageEntry.doNumber || '').match(/^DO(\d+)$/i)?.[1]) || 0
+  ), 0) + 1;
 }
 
 function updateDeliveryPackageProgress() {
@@ -2428,9 +2544,10 @@ function openDirectDeliveryEntry() {
 
 function continueDirectDeliveryEntry(orderId) {
   const order = AppState.orders.find(item => item.id === orderId);
-  if (!order || (order.deliveryPackages?.length || 0) >= order.quantity) return;
+  const savedPackages = dedupeOrderPackages(order, order?.deliveryPackages || []);
+  if (!order || savedPackages.length >= order.quantity) return;
   openDirectDeliveryEntry();
-  directDeliveryPackageIndex = order.deliveryPackages?.length || 0;
+  directDeliveryPackageIndex = savedPackages.length;
   document.getElementById('deliv-form-order-id').value = order.id;
   document.getElementById('deliv-order-id-input').value = order.id;
   document.getElementById('deliv-form-model').value = order.productModel;
@@ -2447,10 +2564,10 @@ function continueDirectDeliveryEntry(orderId) {
   toggleDeliveryOtherPlatform();
   const ownerSelect = document.getElementById('direct-delivery-owner');
   ownerSelect.value = order.customerId;
-  directDeliveryPackageIndex = order.deliveryPackages?.length || 0;
+  directDeliveryPackageIndex = savedPackages.length;
   setDirectDeliveryFieldsActive(true);
   updateDeliveryPackageProgress();
-  const previousDelivery = order.deliveryPackages?.at(-1)?.delivery;
+  const previousDelivery = savedPackages.at(-1)?.delivery;
   document.getElementById('deliv-form-name').value = previousDelivery?.recipientName || '';
   document.getElementById('deliv-form-mobile').value = previousDelivery?.mobile || '';
   document.getElementById('deliv-form-pincode').value = previousDelivery?.pincode || '';
@@ -2714,11 +2831,12 @@ async function handleSaveDeliveryWithGst(e) {
 
   if (directDeliveryEntry) {
     if (gstDetails?.fileData) gstDetails.fileId = `invoice_${packageId}`;
-    const sequence = getNextDirectDeliverySequence(order.customerId || customer.id);
+    const sequence = getNextDirectDeliverySequence(order);
     const packageEntry = {
       id: packageId,
       sequence,
       doNumber: `DO${sequence}`,
+      packageTag: deliveryPackageTag(order, { sequence, doNumber: `DO${sequence}`, delivery, submittedAt: new Date().toISOString() }),
       delivery,
       gstDetails,
       status: order.status === 'Pending Approval' ? 'Pending Approval' : 'Out for Delivery',
@@ -2784,6 +2902,7 @@ function markOrderDelivered(orderId, packageId = '') {
     setButtonLoadingState(triggerButton, 'Marking...', true);
     try {
       if (packageId) {
+        o.deliveryPackages = dedupeOrderPackages(o, o.deliveryPackages || []);
         const packageEntry = o.deliveryPackages?.find(item => item.id === packageId);
         if (!packageEntry) return;
         packageEntry.status = 'Delivered';
@@ -2804,7 +2923,7 @@ function markOrderDelivered(orderId, packageId = '') {
 function openSettlementModalForOrder(orderId) {
   const o = AppState.orders.find(item => item.id === orderId);
   if (!o) return;
-  const due = o.payableAmount - (o.advancePaid || 0) - (o.settledAmount || 0);
+  const due = getOrderNetDue(o);
 
   document.getElementById('settle-order-id').value = o.id;
   document.getElementById('settle-customer-id').value = o.customerId;
@@ -2824,7 +2943,7 @@ function handleExecuteSettlement(e) {
 
   const order = AppState.orders.find(o => o.id === orderId);
   const cust = AppState.customers.find(c => c.id === custId);
-  const outstanding = order ? order.payableAmount - (order.advancePaid || 0) - (order.settledAmount || 0) : 0;
+  const outstanding = order ? getOrderNetDue(order) : 0;
 
   if (!order || !cust || !Number.isFinite(amount) || amount <= 0 || amount > outstanding) {
     alert('Settlement amount must be greater than zero and no more than the outstanding balance.');
@@ -3180,10 +3299,22 @@ function triggerBlobDownload(content, filename, contentType) {
 }
 
 function exportFilteredDeliveriesToExcel() {
-  let csv = "Platform,Product Model,Order ID,Delivery No,Recipient Name,Phone,Tracking,OTP,Pincode,Status\n";
+  let csv = "Delivery Date,Booker,Platform,Product Model,Quantity,Order ID,Delivery No,Delivery Tag,Recipient Name,Phone,Tracking,OTP,Pincode,Order Amount Paid (once),Advance Taken (once),Settled (once),Order Net Due (once),Status\n";
+  const financialOrders = new Set();
   getFilteredDeliveries().forEach(entry => {
-    const { order: o, delivery: d } = entry;
-    csv += `"${d.platform}","${o.productModel}","${o.id}","${entry.doNumber || ''}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${entry.status}"\n`;
+    const o = entry;
+    const d = entry.delivery;
+    const includeFinancials = !financialOrders.has(String(o.id));
+    financialOrders.add(String(o.id));
+    csv += [
+      d.deliveryDate, o.customerName, d.platform, o.productModel, o.quantity, o.id, entry.doNumber,
+      entry.packageTag, d.recipientName, d.mobile, d.tracking, d.otp, d.pincode,
+      includeFinancials ? o.amountPaid : '',
+      includeFinancials ? o.advancePaid : '',
+      includeFinancials ? o.settledAmount : '',
+      includeFinancials ? getOrderNetDue(o) : '',
+      entry.status
+    ].map(csvCell).join(',') + '\n';
   });
   triggerBlobDownload(csv, 'All_Deliveries_Registry.csv', 'text/csv;charset=utf-8;');
 }
@@ -3199,7 +3330,7 @@ function getFilteredDeliveries() {
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
   })))).filter(entry => {
     const delivery = entry.delivery;
-    if (!delivery?.submitted || (date && (delivery.deliveryDate || entry.order.createdAt) !== date)) return false;
+    if (!delivery?.submitted || (date && String(delivery.deliveryDate || delivery.submittedAt || entry.order.createdAt).slice(0, 10) !== date)) return false;
     if (platform !== 'ALL' && delivery.platform !== platform) return false;
     if (!search) return true;
     return [entry.doNumber, entry.order.id, delivery.pincode, delivery.tracking, delivery.recipientName, entry.order.productModel]
@@ -3210,8 +3341,13 @@ function getFilteredDeliveries() {
     status: entry.status || entry.order.status,
     packageId: entry.id,
     packageNumber: entry.packageNumber,
-    doNumber: entry.doNumber
+    doNumber: entry.doNumber,
+    packageTag: entry.packageTag || deliveryPackageTag(entry.order, entry)
   }));
+}
+
+function csvCell(value) {
+  return `"${String(value ?? '').replaceAll('"', '""')}"`;
 }
 
 function exportTodayDeliveriesToExcel() {
@@ -3220,10 +3356,19 @@ function exportTodayDeliveriesToExcel() {
     alert('No active delivery dispatches found for today.');
     return;
   }
-  let csv = "Platform,Model,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order ID,Delivery No,Card Last 4\n";
+  let csv = "Delivery Date,Booker,Platform,Model,Quantity,Order ID,Delivery No,Delivery Tag,Recipient Name,Mobile,Tracking AWB,OTP,Pincode,Order Amount Paid (once),Order Net Due (once),Card Last 4\n";
+  const financialOrders = new Set();
   todayList.forEach(o => {
     const d = o.delivery;
-    csv += `"${d.platform}","${o.productModel}","${d.recipientName}","${d.mobile}","${d.tracking}","${d.otp}","${d.pincode}","${o.id}","${o.doNumber || ''}","${o.cardLast4}"\n`;
+    const includeFinancials = !financialOrders.has(String(o.id));
+    financialOrders.add(String(o.id));
+    csv += [
+      d.deliveryDate, o.customerName, d.platform, o.productModel, o.quantity, o.id, o.doNumber,
+      o.packageTag, d.recipientName, d.mobile, d.tracking, d.otp, d.pincode,
+      includeFinancials ? o.amountPaid : '',
+      includeFinancials ? getOrderNetDue(o) : '',
+      o.cardLast4
+    ].map(csvCell).join(',') + '\n';
   });
   triggerBlobDownload(csv, `Deliveries_Today_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
@@ -3239,7 +3384,7 @@ function getTodayModalDeliveries() {
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : 'DO1'
   })))).filter(entry => {
     const delivery = entry.delivery;
-    if (!delivery?.submitted || (delivery.deliveryDate || entry.order.createdAt) !== todayIsoDate()) return false;
+    if (!delivery?.submitted || String(delivery.deliveryDate || delivery.submittedAt || entry.order.createdAt).slice(0, 10) !== todayIsoDate()) return false;
     if (fPin && !String(delivery.pincode || '').toLowerCase().includes(fPin)) return false;
     if (fName && !String(delivery.recipientName || '').toLowerCase().includes(fName)) return false;
     if (fProd && !String(entry.order.productModel || '').toLowerCase().includes(fProd)) return false;
@@ -3250,14 +3395,15 @@ function getTodayModalDeliveries() {
     status: entry.status || entry.order.status,
     packageId: entry.id,
     packageNumber: entry.packageNumber,
-    doNumber: entry.doNumber
+    doNumber: entry.doNumber,
+    packageTag: entry.packageTag || deliveryPackageTag(entry.order, entry)
   }));
 }
 
 function exportCustomerLedgerCSV() {
   let csv = "Customer ID,Customer Name,Created By Admin,Orders Count,Total Paid,Advance Taken,Settled,Net Balance\n";
   AppState.customers.forEach(c => {
-    const cOrders = AppState.orders.filter(o => o.customerId === c.id);
+    const cOrders = dedupeOrderRecords(AppState.orders.filter(o => o.customerId === c.id));
     const paid = cOrders.reduce((s, o) => s + o.amountPaid, 0);
     const payable = cOrders.reduce((s, o) => s + o.payableAmount, 0);
     const advance = cOrders.reduce((s, o) => s + (o.advancePaid || 0), 0);

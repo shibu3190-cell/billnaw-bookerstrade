@@ -133,9 +133,46 @@ test('isolated account and product API workflows use fake persistence only', asy
     status: 400
   });
   await call('/orders/create', {
-    body: { order: { id: 'test-order-active-product', productId: 'test-product-01', customerId: credentials.booker.id, adminId: credentials.admin.id, productModel: 'Test Phone Pro', amountPaid: 1000, quantity: 1 } },
+    body: { order: { id: 'test-order-active-product', productId: 'test-product-01', customerId: credentials.booker.id, adminId: credentials.admin.id, productModel: 'Test Phone Pro', amountPaid: 1000, payableAmount: 2020, quantity: 2, status: 'Booked' } },
     sessionToken: adminSession
   });
+  async function submitPackage(id, recipientName) {
+    const delivery = {
+      platform: 'Flipkart',
+      recipientName,
+      mobile: '9000000000',
+      tracking: `awb-${id}`,
+      otp: '123456',
+      pincode: '110001',
+      submitted: true,
+      deliveryDate: '2026-10-11'
+    };
+    return call('/orders/delivery', {
+      body: {
+        orderId: 'test-order-active-product',
+        delivery,
+        packageEntry: { id, delivery, submittedAt: '2026-10-11T10:00:00.000Z' }
+      },
+      sessionToken: adminSession
+    });
+  }
+  const firstPackage = await submitPackage('test-package-1', 'First Booker');
+  const secondPackage = await submitPackage('test-package-2', 'Second Booker');
+  const retriedFirstPackage = await submitPackage('test-package-1', 'First Booker Updated');
+  assert.equal(firstPackage.doNumber, 'DO1');
+  assert.equal(secondPackage.doNumber, 'DO2');
+  assert.equal(retriedFirstPackage.doNumber, 'DO1');
+  assert.match(firstPackage.packageTag, /^day-2026-10-11\|booker-/);
+  const deliveredOrder = (await db.collection('orders').doc('test-order-active-product').get()).data();
+  assert.deepEqual(deliveredOrder.deliveryPackages.map(item => item.doNumber), ['DO1', 'DO2']);
+  assert.equal(deliveredOrder.deliveryPackages.length, 2);
+  const packageSheetRows = (await sheets.spreadsheets.values.get({
+    spreadsheetId: 'isolated-test-spreadsheet',
+    range: 'Delivery_Packages!A:T'
+  })).data.values;
+  assert.equal(packageSheetRows[1][16], 'DO1');
+  assert.equal(packageSheetRows[2][16], 'DO2');
+  assert.ok(packageSheetRows[1][19].includes('|order-test-order-active-product|do-1'));
 
   await call('/customers/status', {
     body: { customerId: credentials.booker.id, active: false },

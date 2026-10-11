@@ -898,10 +898,32 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
   color: var(--text-muted);
   font-size: 0.8rem;
 }
-
+.delivery-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.delivery-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.delivery-detail-item span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.delivery-detail-item strong {
+  overflow-wrap: anywhere;
+}
 .direct-delivery-fields[hidden] { display: none; }
 
 @media (max-width: 600px) {
   #tab-delivery .filter-bar { align-items: stretch; }
   #tab-delivery .filter-bar > div:last-child { justify-content: flex-end; }
+  .delivery-details-grid { grid-template-columns: 1fr; }
 }

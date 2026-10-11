@@ -16,23 +16,31 @@ function buildDeliveryPackageTag({ customerId, deliveryDate, orderId, sequence, 
   return `day-${normalizedDate}|booker-${normalizedCustomer}|order-${normalizedOrder}|do-${resolvedSequence}`;
 }
 
-function dedupeDeliveryPackages(packages) {
+function dedupeDeliveryPackages(packages, context = {}) {
   const seen = new Map();
+  const seenIds = new Set();
+  const seenTags = new Set();
   for (const packageEntry of Array.isArray(packages) ? packages : []) {
-    const key = buildDeliveryPackageTag({
-      customerId: packageEntry.customerId || packageEntry.delivery?.customerId,
+    const packageId = String(packageEntry.id || packageEntry.packageId || '').trim();
+    const sequence = packageSequence(packageEntry);
+    const tag = buildDeliveryPackageTag({
+      customerId: packageEntry.customerId || packageEntry.delivery?.customerId || context.customerId,
       deliveryDate: packageEntry.delivery?.deliveryDate || packageEntry.delivery?.submittedAt || packageEntry.submittedAt,
-      orderId: packageEntry.orderId || packageEntry.id,
-      sequence: packageEntry.sequence,
+      orderId: packageEntry.orderId || context.orderId || packageId,
+      sequence,
       doNumber: packageEntry.doNumber
     });
-    if (!seen.has(key)) seen.set(key, packageEntry);
+    if ((packageId && seenIds.has(packageId)) || (sequence > 0 && seenTags.has(tag))) continue;
+    if (packageId) seenIds.add(packageId);
+    if (sequence > 0) seenTags.add(tag);
+    const key = packageId || tag;
+    if (!seen.has(key)) seen.set(key, { ...packageEntry, ...(sequence > 0 ? { packageTag: tag } : {}) });
   }
   return [...seen.values()];
 }
 
-function allocateDeliveryPackageIdentity(packages, packageId, quantity) {
-  const currentPackages = dedupeDeliveryPackages(packages);
+function allocateDeliveryPackageIdentity(packages, packageId, quantity, context) {
+  const currentPackages = dedupeDeliveryPackages(packages, context);
   const existingIndex = currentPackages.findIndex(packageEntry => packageEntry.id === packageId);
 
   if (existingIndex >= 0) {
