@@ -164,3 +164,140 @@ test('Deliveries table: sorts deliveries ascending by DO sequence and formats pa
 
   assert.equal(parcelText, 'Parcel 1 of 2', 'Must render "Parcel 1 of 2" instead of "DO3 of 2"');
 });
+
+test('Direct Delivery: multi-quantity delivery sequence reuses existing order and prevents duplicate orders in active booking pipeline', () => {
+  const orders = [];
+  const generateOrderId = (val = '') => val ? val : 'OD191563';
+
+  // Helper simulating handleSaveDeliveryWithGst order resolution logic
+  function resolveOrderForDelivery(rawInputOrderId, isDirectDelivery) {
+    const rawOrderId = String(rawInputOrderId || '').trim();
+    let order = rawOrderId ? orders.find(o => o.id === rawOrderId) : null;
+    const orderId = order ? order.id : generateOrderId(rawOrderId);
+    if (isDirectDelivery && !order) {
+      order = {
+        id: orderId,
+        productModel: 'lg tv',
+        quantity: 2,
+        amountPaid: 20000,
+        status: 'Pending Approval',
+        deliveryPackages: []
+      };
+      orders.unshift(order);
+    }
+    return order;
+  }
+
+  // Package 1 submission (new direct delivery entry, no existing ID)
+  const order1 = resolveOrderForDelivery('', true);
+  assert.ok(order1);
+  assert.equal(order1.id, 'OD191563');
+  order1.deliveryPackages.push({ id: 'pkg_1', doNumber: 'DO1', sequence: 1 });
+  assert.equal(orders.length, 1, 'Only 1 order created on package 1');
+
+  // Package 2 submission (modal remains open with deliv-form-order-id set to OD191563)
+  const order2 = resolveOrderForDelivery('OD191563', true);
+  assert.equal(order2.id, 'OD191563', 'Package 2 must resolve to the same parent order');
+  order2.deliveryPackages.push({ id: 'pkg_2', doNumber: 'DO2', sequence: 2 });
+
+  // Verify no duplicate order was created in pipeline
+  assert.equal(orders.length, 1, 'Active booking pipeline must still have exactly 1 order, no duplicate entry');
+  assert.equal(orders[0].deliveryPackages.length, 2, 'Parent order must hold all 2 saved packages');
+  assert.equal(orders[0].deliveryPackages[0].doNumber, 'DO1');
+  assert.equal(orders[0].deliveryPackages[1].doNumber, 'DO2');
+});
+
+test('Today Shipment Indicator: counts all today dispatches including Pending Approval booker shipments and multi-packages', () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const sampleOrders = [
+    // 1. Booker order with package submitted today in 'Pending Approval' status (the user screenshot case)
+    {
+      id: 'OD191563',
+      productModel: 'lg tv',
+      quantity: 2,
+      status: 'Pending Approval',
+      deliveryPackages: [
+        {
+          id: 'pkg_1',
+          doNumber: 'DO1',
+          sequence: 1,
+          status: 'Pending Approval',
+          delivery: { submitted: true, deliveryDate: today, submittedAt: `${today}T10:00:00Z` }
+        }
+      ]
+    },
+    // 2. Booking without any delivery submitted yet
+    {
+      id: 'OD148195',
+      productModel: 'lg tv',
+      quantity: 1,
+      status: 'Pending Approval',
+      deliveryPackages: []
+    },
+    // 3. Admin order with 2 parcels out for delivery today
+    {
+      id: 'OD999001',
+      productModel: 'phone',
+      quantity: 2,
+      status: 'Out for Delivery',
+      deliveryPackages: [
+        {
+          id: 'pkg_991',
+          doNumber: 'DO1',
+          sequence: 1,
+          status: 'Out for Delivery',
+          delivery: { submitted: true, deliveryDate: today, submittedAt: `${today}T09:00:00Z` }
+        },
+        {
+          id: 'pkg_992',
+          doNumber: 'DO2',
+          sequence: 2,
+          status: 'Out for Delivery',
+          delivery: { submitted: true, deliveryDate: today, submittedAt: `${today}T09:30:00Z` }
+        }
+      ]
+    },
+    // 4. Settled order (should be excluded from active today dispatches)
+    {
+      id: 'OD888001',
+      productModel: 'watch',
+      quantity: 1,
+      status: 'Settled',
+      deliveryPackages: [
+        {
+          id: 'pkg_881',
+          doNumber: 'DO1',
+          sequence: 1,
+          status: 'Settled',
+          delivery: { submitted: true, deliveryDate: today }
+        }
+      ]
+    }
+  ];
+
+  // Logic matching dedupeDeliveryRows + getTodayModalDeliveries(false).length
+  function getTodayDeliveriesCount(orders) {
+    const allEntries = orders.flatMap(order => (order.deliveryPackages || []).map((pkg, idx) => ({
+      order,
+      ...pkg,
+      packageNumber: pkg.sequence || idx + 1,
+      doNumber: pkg.doNumber || `DO${idx + 1}`
+    })));
+
+    const todayDispatches = allEntries.filter(entry => {
+      const delivery = entry.delivery;
+      if (!delivery?.submitted) return false;
+      const dateStr = String(delivery.deliveryDate || delivery.submittedAt || '').slice(0, 10);
+      if (dateStr !== today) return false;
+      const status = entry.status || delivery.status || entry.order?.status;
+      if (status === 'Settled') return false;
+      return true;
+    });
+
+    return todayDispatches.length;
+  }
+
+  const shipmentCount = getTodayDeliveriesCount(sampleOrders);
+  assert.equal(shipmentCount, 3, 'Shipment indicator must show 3 shipments (1 pending approval booker package + 2 admin packages, excluding settled)');
+});
+

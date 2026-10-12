@@ -1724,11 +1724,7 @@ function escapeHtml(value) {
 }
 
 function updateTodayBadge() {
-  const count = getVisibleOrders().flatMap(order => orderDeliveryEntries(order)).filter(entry => {
-    const deliveryDate = String(entry.delivery?.deliveryDate || entry.delivery?.submittedAt || '').slice(0, 10);
-    const status = entry.status || entry.delivery?.status;
-    return deliveryDate === todayIsoDate() && ['Out for Delivery', 'In Process'].includes(status);
-  }).length;
+  const count = getTodayModalDeliveries(false).length;
   const badge = document.getElementById('badge-today-count');
   if (badge) badge.textContent = `${count} Shipments`;
 }
@@ -2657,7 +2653,7 @@ function continueDirectDeliveryEntry(orderId) {
   document.getElementById('direct-delivery-custom-model').value = product ? '' : order.productModel;
   document.getElementById('direct-delivery-custom-model').style.display = product ? 'none' : 'block';
   document.getElementById('direct-delivery-custom-model').required = !product;
-  document.getElementById('direct-delivery-card-amount').value = order.amountPaid;
+  document.getElementById('direct-delivery-card-amount').value = order.unitPrice || (order.quantity > 1 ? Math.round(order.amountPaid / order.quantity) : order.amountPaid);
   document.getElementById('direct-delivery-quantity').value = order.quantity;
   document.getElementById('direct-delivery-card-last4').value = order.cardLast4 || '';
   document.getElementById('deliv-form-platform').value = ['Flipkart', 'Amazon', 'Reliance Digital', 'Croma', 'Pinelabs', 'Apple Store'].includes(order.platform) ? order.platform : 'Other';
@@ -2824,7 +2820,9 @@ async function handleSaveDeliveryWithGst(e) {
   e.preventDefault();
   const visibleOrderIdInput = document.getElementById('deliv-order-id-input');
   const merchantOrderId = document.getElementById('deliv-merchant-order-id')?.value?.trim() || '';
-  const orderId = generateOrderId(visibleOrderIdInput?.value || document.getElementById('deliv-form-order-id').value);
+  const rawOrderId = (document.getElementById('deliv-form-order-id').value || visibleOrderIdInput?.value || '').trim();
+  let order = rawOrderId ? AppState.orders.find(o => o.id === rawOrderId) : null;
+  const orderId = order ? order.id : generateOrderId(rawOrderId);
   if (visibleOrderIdInput) visibleOrderIdInput.value = orderId;
   document.getElementById('deliv-form-order-id').value = orderId;
   const submitButton = document.getElementById('delivery-submit-button');
@@ -2834,7 +2832,6 @@ async function handleSaveDeliveryWithGst(e) {
   setInlineLoadingState(packageLabel, true);
   setButtonLoadingState(submitButton, packageLabel, true);
   try {
-    let order = AppState.orders.find(o => o.id === orderId);
   if (directDeliveryEntry && !order) {
     const selectedProductId = document.getElementById('direct-delivery-product').value;
     let product = AppState.products.find(item => item.id === selectedProductId);
@@ -2861,7 +2858,7 @@ async function handleSaveDeliveryWithGst(e) {
         ? { id: `ADMIN-SELF-${AppState.currentUser.adminId}`, name: `${AppState.currentUser.name} (Admin)` }
         : AppState.customers.find(item => item.id === ownerId);
     if (!customer) return alert('Choose a valid booker account.');
-    const uniqueOrderId = generateOrderId(orderId);
+    const uniqueOrderId = orderId;
     order = {
       id: uniqueOrderId,
       merchantOrderId,
@@ -3520,10 +3517,10 @@ function exportTodayDeliveriesToExcel() {
   triggerBlobDownload(csv, `Deliveries_Today_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8;');
 }
 
-function getTodayModalDeliveries() {
-  const fPin = (document.getElementById('today-filter-pin')?.value || '').trim().toLowerCase();
-  const fName = (document.getElementById('today-filter-name')?.value || '').toLowerCase().trim();
-  const fProd = (document.getElementById('today-filter-product')?.value || '').toLowerCase().trim();
+function getTodayModalDeliveries(applyFilters = true) {
+  const fPin = applyFilters ? (document.getElementById('today-filter-pin')?.value || '').trim().toLowerCase() : '';
+  const fName = applyFilters ? (document.getElementById('today-filter-name')?.value || '').toLowerCase().trim() : '';
+  const fProd = applyFilters ? (document.getElementById('today-filter-product')?.value || '').toLowerCase().trim() : '';
   const rows = dedupeDeliveryRows(getVisibleOrders().flatMap(order => orderDeliveryEntries(order).map((entry, index) => ({
     order,
     ...entry,
@@ -3531,15 +3528,17 @@ function getTodayModalDeliveries() {
     doNumber: entry.packageEntry ? (entry.doNumber || `DO${entry.sequence || index + 1}`) : (entry.doNumber || 'DO1')
   })))).filter(entry => {
     const delivery = entry.delivery;
-    if (!delivery?.submitted || String(delivery.deliveryDate || delivery.submittedAt || entry.order.createdAt).slice(0, 10) !== todayIsoDate()) return false;
+    if (!delivery?.submitted || String(delivery.deliveryDate || delivery.submittedAt || entry.order?.createdAt).slice(0, 10) !== todayIsoDate()) return false;
+    const currentStatus = entry.status || delivery.status || entry.order?.status;
+    if (currentStatus === 'Settled') return false;
     if (fPin && !String(delivery.pincode || '').toLowerCase().includes(fPin)) return false;
     if (fName && !String(delivery.recipientName || '').toLowerCase().includes(fName)) return false;
-    if (fProd && !String(entry.order.productModel || '').toLowerCase().includes(fProd)) return false;
+    if (fProd && !String(entry.order?.productModel || '').toLowerCase().includes(fProd)) return false;
     return true;
   }).map(entry => ({
     ...entry.order,
     delivery: entry.delivery,
-    status: entry.status || entry.order.status,
+    status: entry.status || entry.order?.status,
     packageId: entry.id,
     packageNumber: entry.packageNumber,
     doNumber: entry.doNumber,
