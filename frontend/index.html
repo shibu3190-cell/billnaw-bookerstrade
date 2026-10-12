@@ -36,9 +36,9 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon.svg" />
 
-  <link rel="stylesheet" href="style.css?v=20261012-1" />
+  <link rel="stylesheet" href="style.css?v=20261012-2" />
   <script defer src="csv.js?v=20261011"></script>
-  <script defer src="app.js?v=20261012-1"></script>
+  <script defer src="app.js?v=20261012-2"></script>
 </head>
 <body>
 
@@ -90,11 +90,11 @@
 
       <form id="auth-form" onsubmit="executeLogin(event)">
         <div class="form-field">
-          <label class="form-label">Username or Booker ID</label>
+          <label class="form-label" for="auth-username">Username or Booker ID</label>
           <input type="text" id="auth-username" class="form-input" autocomplete="username" required />
         </div>
         <div class="form-field">
-          <label class="form-label">Password</label>
+          <label class="form-label" for="auth-password">Password</label>
           <div class="password-field"><input type="password" id="auth-password" class="form-input" autocomplete="current-password" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('auth-password', this)" aria-label="Show password">&#128065;</button></div>
         </div>
         <button type="submit" id="auth-submit-button" class="btn btn-primary" style="width: 100%; padding: 12px; margin-top: 6px;">Sign In to Workspace</button>
@@ -108,7 +108,7 @@
     
     <header class="header-bar">
       <div class="brand-section">
-        <div class="brand-title">📦 DeviceTrade Pro</div>
+        <h1 class="brand-title">📦 DeviceTrade Pro</h1>
         <span id="badge-active-role" class="role-badge admin">Master Admin</span>
       </div>
 
@@ -155,20 +155,20 @@
 
         <div class="table-card">
           <div class="table-responsive">
-            <table>
+            <table aria-label="Active Booking Pipeline">
               <thead>
                 <tr>
-                  <th>Order ID</th>
-                  <th>Platform</th>
-                  <th>Product Model</th>
-                  <th>Customer</th>
-                  <th>Card (Last 4)</th>
-                  <th>Amount Paid</th>
-                  <th>Advance Taken</th>
-                  <th>Balance Due</th>
-                  <th>GST Included</th>
-                  <th>Status</th>
-                  <th>Action</th>
+                  <th scope="col">Order ID</th>
+                  <th scope="col">Platform</th>
+                  <th scope="col">Product Model</th>
+                  <th scope="col">Customer</th>
+                  <th scope="col">Card (Last 4)</th>
+                  <th scope="col">Amount Paid</th>
+                  <th scope="col">Advance Taken</th>
+                  <th scope="col">Balance Due</th>
+                  <th scope="col">GST Included</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Action</th>
                 </tr>
               </thead>
               <tbody id="table-home-orders"></tbody>
@@ -181,8 +181,8 @@
       <section id="tab-orders" class="view-content">
         <div class="filter-bar">
           <div class="filter-group">
-            <input type="text" id="order-search" class="input-search" placeholder="Search ID, model, customer, card..." oninput="debouncedRenderOrders()" />
-            <select id="order-status-filter" class="select-filter" onchange="renderOrdersTable()">
+            <input type="text" id="order-search" class="input-search" placeholder="Search ID, model, customer, card..." aria-label="Search bookings by ID, model, customer, or card" oninput="debouncedRenderOrders()" />
+            <select id="order-status-filter" class="select-filter" aria-label="Filter bookings by status" onchange="renderOrdersTable()">
               <option value="ALL">All Statuses</option>
               <option value="ACTIVE">Active Bookings</option>
               <option value="Pending Approval">Pending Approval</option>
@@ -198,20 +198,20 @@
 
         <div class="table-card">
           <div class="table-responsive">
-            <table>
+            <table aria-label="All Bookings Ledger">
               <thead>
                 <tr>
-                  <th>Order ID</th>
-                  <th>Platform</th>
-                  <th>Model / Spec</th>
-                  <th>Card</th>
-                  <th>Customer</th>
-                  <th>Amount Paid</th>
-                  <th>Advance Taken</th>
-                  <th>Net Due</th>
-                  <th>GST Total</th>
-                  <th>Status</th>
-                  <th>Stage Actions</th>
+                  <th scope="col">Order ID</th>
+                  <th scope="col">Platform</th>
+                  <th scope="col">Model / Spec</th>
+                  <th scope="col">Card</th>
+                  <th scope="col">Customer</th>
+                  <th scope="col">Amount Paid</th>
+                  <th scope="col">Advance Taken</th>
+                  <th scope="col">Net Due</th>
+                  <th scope="col">GST Total</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Stage Actions</th>
                 </tr>
               </thead>
               <tbody id="table-all-orders"></tbody>
@@ -225,8 +225,8 @@
       <section id="tab-delivery" class="view-content">
         <div class="filter-bar">
           <div class="filter-group">
-            <input type="text" id="delivery-search" class="input-search" placeholder="Search DO, order ID, pin, tracking, recipient..." oninput="debouncedRenderDeliveries()" />
-            <select id="delivery-platform-filter" class="select-filter" onchange="renderDeliveryTable()">
+            <input type="text" id="delivery-search" class="input-search" placeholder="Search DO, order ID, pin, tracking, recipient..." aria-label="Search deliveries by DO, order ID, pincode, tracking, or recipient" oninput="debouncedRenderDeliveries()" />
+            <select id="delivery-platform-filter" class="select-filter" aria-label="Filter deliveries by platform" onchange="renderDeliveryTable()">
               <option value="ALL">All Platforms</option>
               <option value="Flipkart">Flipkart</option>
               <option value="Amazon">Amazon</option>
@@ -236,7 +236,7 @@
               <option value="Apple Store">Apple Store</option>
               <option value="Other">Other</option>
             </select>
-            <input type="date" id="delivery-date-filter" class="input-search" onchange="renderDeliveryTable()" />
+            <input type="date" id="delivery-date-filter" class="input-search" aria-label="Filter deliveries by date" onchange="renderDeliveryTable()" />
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
             <button class="btn btn-primary btn-sm delivery-add-button" onclick="openDirectDeliveryEntry()" aria-label="Add delivery" title="Add delivery">+</button>
@@ -246,21 +246,21 @@
 
         <div class="table-card">
           <div class="table-responsive">
-            <table>
+            <table aria-label="Deliveries and Shipments">
               <thead>
                 <tr>
-                  <th>Platform</th>
-                  <th>Locked Model</th>
-                  <th>Parent Order ID</th>
-                  <th>Delivery No.</th>
-                  <th>Recipient Name</th>
-                  <th>Contact</th>
-                  <th>Tracking / AWB</th>
-                  <th>Delivery OTP</th>
-                  <th>Pincode</th>
-                  <th>GST Invoice</th>
-                  <th>Status</th>
-                  <th>Workflow Action</th>
+                  <th scope="col">Platform</th>
+                  <th scope="col">Locked Model</th>
+                  <th scope="col">Parent Order ID</th>
+                  <th scope="col">Delivery No.</th>
+                  <th scope="col">Recipient Name</th>
+                  <th scope="col">Contact</th>
+                  <th scope="col">Tracking / AWB</th>
+                  <th scope="col">Delivery OTP</th>
+                  <th scope="col">Pincode</th>
+                  <th scope="col">GST Invoice</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Workflow Action</th>
                 </tr>
               </thead>
               <tbody id="table-delivery-list"></tbody>
@@ -275,7 +275,7 @@
       <section id="tab-customers" class="view-content">
         <div class="filter-bar">
           <div class="filter-group">
-            <input type="text" id="cust-search" class="input-search" placeholder="Search customer ID, name or phone..." oninput="debouncedRenderCustomers()" />
+            <input type="text" id="cust-search" class="input-search" placeholder="Search customer ID, name or phone..." aria-label="Search bookers by ID, name, or phone" oninput="debouncedRenderCustomers()" />
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-primary btn-sm" onclick="openCreateCustomerModal()">+ Register Booker</button>
@@ -285,19 +285,19 @@
 
         <div class="table-card">
           <div class="table-responsive">
-            <table>
+            <table aria-label="Booker Accounts">
               <thead>
                 <tr>
-                  <th>Booker ID</th>
-                  <th>Name & Contact</th>
-                  <th>Access</th>
-                  <th>Managing Admin</th>
-                  <th>Active Deals</th>
-                  <th>Lifetime Deals</th>
-                  <th>Total Volume</th>
-                  <th>Total Settled</th>
-                  <th>Balance Due</th>
-                  <th>Actions</th>
+                  <th scope="col">Booker ID</th>
+                  <th scope="col">Name & Contact</th>
+                  <th scope="col">Access</th>
+                  <th scope="col">Managing Admin</th>
+                  <th scope="col">Active Deals</th>
+                  <th scope="col">Lifetime Deals</th>
+                  <th scope="col">Total Volume</th>
+                  <th scope="col">Total Settled</th>
+                  <th scope="col">Balance Due</th>
+                  <th scope="col">Actions</th>
                 </tr>
               </thead>
               <tbody id="table-customers-list"></tbody>
@@ -339,21 +339,21 @@
             <form onsubmit="handleSaveAdminProfile(event)">
               <div class="form-grid two-col">
                 <div class="form-field">
-                  <label class="form-label">Master Admin ID</label>
+                  <label class="form-label" for="cfg-admin-id">Master Admin ID</label>
                   <input type="text" id="cfg-admin-id" class="form-input" readonly />
                 </div>
                 <div class="form-field">
-                  <label class="form-label">Admin Full Name</label>
+                  <label class="form-label" for="cfg-admin-name">Admin Full Name</label>
                   <input type="text" id="cfg-admin-name" class="form-input" required />
                 </div>
               </div>
               <div class="form-grid two-col">
                 <div class="form-field">
-                  <label class="form-label">Username</label>
+                  <label class="form-label" for="cfg-admin-user">Username</label>
                   <input type="text" id="cfg-admin-user" class="form-input" required />
                 </div>
                 <div class="form-field">
-                  <label class="form-label">Password</label>
+                  <label class="form-label" for="cfg-admin-pass">Password</label>
                   <div class="password-field"><input type="password" id="cfg-admin-pass" class="form-input" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('cfg-admin-pass', this)" aria-label="Show password">&#128065;</button></div>
                 </div>
               </div>
@@ -381,7 +381,7 @@
               <input id="product-catalog-upload" type="file" accept=".csv,text/csv" style="display:none" onchange="handleProductCatalogUpload(this)" />
             </div>
             <div style="margin-bottom:8px;">
-              <input id="product-catalog-search" type="text" class="input-search" placeholder="Search model, ID, admin, price..." oninput="renderProductListSettings()" />
+              <input id="product-catalog-search" type="text" class="input-search" placeholder="Search model, ID, admin, price..." aria-label="Search product catalog" oninput="renderProductListSettings()" />
             </div>
             <div id="settings-product-list" style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto;"></div>
           </div>
@@ -415,24 +415,24 @@
   </div>
 
   <!-- Modal: Lifetime Bookings Filter -->
-  <div class="modal-backdrop" id="modal-lifetime-drilldown">
+  <div class="modal-backdrop" id="modal-lifetime-drilldown" role="dialog" aria-modal="true" aria-labelledby="lifetime-drilldown-title">
     <div class="modal-window wide">
       <div class="modal-header">
-        <div class="modal-title">📈 Lifetime Settled Deals & Ledger</div>
-        <button class="modal-close" onclick="closeModal('modal-lifetime-drilldown')">&times;</button>
+        <div class="modal-title" id="lifetime-drilldown-title">📈 Lifetime Settled Deals & Ledger</div>
+        <button class="modal-close" onclick="closeModal('modal-lifetime-drilldown')" aria-label="Close dialog">&times;</button>
       </div>
 
       <div class="filter-bar">
         <div class="filter-group">
-          <select id="lifetime-date-filter-type" class="select-filter" onchange="handleLifetimeFilterTypeChange()">
+          <select id="lifetime-date-filter-type" class="select-filter" aria-label="Filter lifetime deals by date range" onchange="handleLifetimeFilterTypeChange()">
             <option value="ALL">All Time</option>
             <option value="DAY">Specific Day</option>
             <option value="MONTH">Month-wise</option>
             <option value="YEAR">Year-wise</option>
           </select>
-          <input type="date" id="lifetime-filter-date" class="input-search" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
-          <input type="month" id="lifetime-filter-month" class="input-search" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
-          <select id="lifetime-filter-year" class="select-filter" style="display:none;" onchange="renderLifetimeDrilldownTable()">
+          <input type="date" id="lifetime-filter-date" class="input-search" aria-label="Filter lifetime deals by date" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
+          <input type="month" id="lifetime-filter-month" class="input-search" aria-label="Filter lifetime deals by month" style="display:none;" onchange="renderLifetimeDrilldownTable()" />
+          <select id="lifetime-filter-year" class="select-filter" aria-label="Filter lifetime deals by year" style="display:none;" onchange="renderLifetimeDrilldownTable()">
             <option value="2026">2026</option>
             <option value="2025">2025</option>
           </select>
@@ -457,18 +457,18 @@
 
       <div class="table-card">
         <div class="table-responsive">
-          <table>
+          <table aria-label="Lifetime Settled Deals Ledger">
             <thead>
               <tr>
-                <th>Order ID</th>
-                <th>Platform</th>
-                <th>Model</th>
-                <th>Customer</th>
-                <th>Card</th>
-                <th>Amount Paid</th>
-                <th>Settled Date</th>
-                <th>GST Invoice</th>
-                <th>Status</th>
+                <th scope="col">Order ID</th>
+                <th scope="col">Platform</th>
+                <th scope="col">Model</th>
+                <th scope="col">Customer</th>
+                <th scope="col">Card</th>
+                <th scope="col">Amount Paid</th>
+                <th scope="col">Settled Date</th>
+                <th scope="col">GST Invoice</th>
+                <th scope="col">Status</th>
               </tr>
             </thead>
             <tbody id="table-lifetime-drilldown-body"></tbody>
@@ -479,32 +479,32 @@
   </div>
 
   <!-- Modal: Out For Delivery Today -->
-  <div class="modal-backdrop" id="modal-today-delivery">
+  <div class="modal-backdrop" id="modal-today-delivery" role="dialog" aria-modal="true" aria-labelledby="today-delivery-title">
     <div class="modal-window wide">
       <div class="modal-header">
-        <div class="modal-title">🚚 Out For Delivery Today</div>
-        <button class="modal-close" onclick="closeModal('modal-today-delivery')">&times;</button>
+        <div class="modal-title" id="today-delivery-title">🚚 Out For Delivery Today</div>
+        <button class="modal-close" onclick="closeModal('modal-today-delivery')" aria-label="Close dialog">&times;</button>
       </div>
       <div class="filter-bar">
         <div class="filter-group">
-          <input type="text" id="today-filter-pin" class="input-search" placeholder="Filter by Pincode..." oninput="renderTodayDeliveryTable()" />
-          <input type="text" id="today-filter-name" class="input-search" placeholder="Filter by Recipient..." oninput="renderTodayDeliveryTable()" />
-          <input type="text" id="today-filter-product" class="input-search" placeholder="Filter by Product..." oninput="renderTodayDeliveryTable()" />
+          <input type="text" id="today-filter-pin" class="input-search" placeholder="Filter by Pincode..." aria-label="Filter today deliveries by pincode" oninput="renderTodayDeliveryTable()" />
+          <input type="text" id="today-filter-name" class="input-search" placeholder="Filter by Recipient..." aria-label="Filter today deliveries by recipient" oninput="renderTodayDeliveryTable()" />
+          <input type="text" id="today-filter-product" class="input-search" placeholder="Filter by Product..." aria-label="Filter today deliveries by product" oninput="renderTodayDeliveryTable()" />
         </div>
         <button class="btn btn-excel btn-sm" onclick="exportTodayDeliveriesToExcel()">Download in Excel (.csv) 📥</button>
       </div>
       <div class="table-card">
         <div class="table-responsive">
-          <table>
+          <table aria-label="Today Out For Delivery Shipments">
             <thead>
               <tr>
-                <th>Platform</th>
-                <th>Model</th>
-                <th>Recipient Name</th>
-                <th>Phone</th>
-                <th>Tracking AWB</th>
-                <th>OTP</th>
-                <th>Pincode</th>
+                <th scope="col">Platform</th>
+                <th scope="col">Model</th>
+                <th scope="col">Recipient Name</th>
+                <th scope="col">Phone</th>
+                <th scope="col">Tracking AWB</th>
+                <th scope="col">OTP</th>
+                <th scope="col">Pincode</th>
               </tr>
             </thead>
             <tbody id="table-today-deliveries-body"></tbody>
@@ -514,27 +514,27 @@
     </div>
   </div>
 
-  <div class="modal-backdrop" id="modal-delivery-details">
+  <div class="modal-backdrop" id="modal-delivery-details" role="dialog" aria-modal="true" aria-labelledby="delivery-details-title">
     <div class="modal-window wide">
       <div class="modal-header">
         <div class="modal-title" id="delivery-details-title">Delivery details</div>
-        <button class="modal-close" onclick="closeModal('modal-delivery-details')">&times;</button>
+        <button class="modal-close" onclick="closeModal('modal-delivery-details')" aria-label="Close dialog">&times;</button>
       </div>
       <div id="delivery-details-body" class="delivery-details-grid"></div>
     </div>
   </div>
 
   <!-- Modal: New Booking Form -->
-  <div class="modal-backdrop" id="modal-new-order">
+  <div class="modal-backdrop" id="modal-new-order" role="dialog" aria-modal="true" aria-labelledby="new-order-title">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">Book New Device Order</div>
-        <button class="modal-close" onclick="closeModal('modal-new-order')">&times;</button>
+        <div class="modal-title" id="new-order-title">Book New Device Order</div>
+        <button class="modal-close" onclick="closeModal('modal-new-order')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleCreateBooking(event)">
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Buying Platform</label>
+            <label class="form-label" for="modal-order-platform">Buying Platform</label>
             <select id="modal-order-platform" class="form-select" onchange="handleBookingOtherField('platform')" required>
               <option value="Flipkart">Flipkart</option>
               <option value="Amazon">Amazon</option>
@@ -544,50 +544,50 @@
               <option value="Apple Store">Apple Store</option>
               <option value="Other">Other</option>
             </select>
-            <input type="text" id="modal-order-platform-other" class="form-input" placeholder="Enter platform / merchant" style="display:none; margin-top:6px;" />
+            <input type="text" id="modal-order-platform-other" class="form-input" placeholder="Enter platform / merchant" aria-label="Enter custom platform or merchant name" style="display:none; margin-top:6px;" />
           </div>
           <div class="form-field">
-            <label class="form-label">Product Model</label>
+            <label class="form-label" for="modal-order-product">Product Model</label>
             <select id="modal-order-product" class="form-select" onchange="autoFillOrderPrice(); handleBookingOtherField('product')" required></select>
-            <input type="text" id="modal-order-product-other" class="form-input" placeholder="Enter device model" style="display:none; margin-top:6px;" />
+            <input type="text" id="modal-order-product-other" class="form-input" placeholder="Enter device model" aria-label="Enter custom device model" style="display:none; margin-top:6px;" />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Merchant Order ID (optional)</label>
+            <label class="form-label" for="modal-merchant-order-id">Merchant Order ID (optional)</label>
             <input type="text" id="modal-merchant-order-id" class="form-input" placeholder="e.g. OD4029102931" />
           </div>
           <div class="form-field">
-            <label class="form-label">System Order ID (optional override)</label>
+            <label class="form-label" for="modal-order-id">System Order ID (optional override)</label>
             <input type="text" id="modal-order-id" class="form-input" placeholder="Leave blank to auto-generate" />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Card Last 4 Digits</label>
+            <label class="form-label" for="modal-order-card">Card Last 4 Digits</label>
             <input type="text" id="modal-order-card" class="form-input" maxlength="4" placeholder="e.g. 7632" required />
           </div>
           <div class="form-field">
-            <label class="form-label">Amount Paid On Card (₹ per unit)</label>
+            <label class="form-label" for="modal-order-paid">Amount Paid On Card (₹ per unit)</label>
             <input type="number" id="modal-order-paid" class="form-input" required />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Quantity</label>
+            <label class="form-label" for="modal-order-quantity">Quantity</label>
             <input type="number" id="modal-order-quantity" class="form-input" min="1" step="1" value="1" required />
           </div>
           <div class="form-field">
-            <label class="form-label">Advance Taken (₹)</label>
+            <label class="form-label" for="modal-order-advance">Advance Taken (₹)</label>
             <input type="number" id="modal-order-advance" class="form-input" value="0" />
           </div>
         </div>
 
         <div class="form-field">
-          <label class="form-label">Booker Account</label>
+          <label class="form-label" for="modal-order-customer-select">Booker Account</label>
           <select id="modal-order-customer-select" class="form-select" required></select>
         </div>
 
@@ -597,11 +597,11 @@
   </div>
 
   <!-- Modal: Submit Delivery & GST File Upload (PDF & Photos) -->
-  <div class="modal-backdrop" id="modal-delivery-submission">
+  <div class="modal-backdrop" id="modal-delivery-submission" role="dialog" aria-modal="true" aria-labelledby="delivery-submission-title">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">Submit Out-For-Delivery & GST Details</div>
-        <button class="modal-close" onclick="closeModal('modal-delivery-submission')">&times;</button>
+        <div class="modal-title" id="delivery-submission-title">Submit Out-For-Delivery & GST Details</div>
+        <button class="modal-close" onclick="closeModal('modal-delivery-submission')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleSaveDeliveryWithGst(event)">
         <input type="hidden" id="deliv-form-order-id" />
@@ -620,7 +620,7 @@
             <div class="form-field">
               <label class="form-label" for="direct-delivery-product">Product Model</label>
               <select id="direct-delivery-product" class="form-select" onchange="handleDirectDeliveryProductChange()"></select>
-              <input type="text" id="direct-delivery-custom-model" class="form-input" placeholder="Enter product model" style="display:none; margin-top:6px;" oninput="document.getElementById('deliv-form-model').value = this.value" />
+              <input type="text" id="direct-delivery-custom-model" class="form-input" placeholder="Enter product model" aria-label="Enter product model" style="display:none; margin-top:6px;" oninput="document.getElementById('deliv-form-model').value = this.value" />
             </div>
             <div class="form-field">
               <label class="form-label" for="direct-delivery-card-amount">Amount paid on card (₹ per unit)</label>
@@ -644,11 +644,11 @@
         
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Locked Product Model</label>
+            <label class="form-label" for="deliv-form-model">Locked Product Model</label>
             <input type="text" id="deliv-form-model" class="form-input" readonly />
           </div>
           <div class="form-field">
-            <label class="form-label">Platform / Merchant</label>
+            <label class="form-label" for="deliv-form-platform">Platform / Merchant</label>
             <select id="deliv-form-platform" class="form-select" onchange="toggleDeliveryOtherPlatform()" required>
               <option value="Flipkart">Flipkart</option>
               <option value="Amazon">Amazon</option>
@@ -658,18 +658,18 @@
               <option value="Apple Store">Apple Store</option>
               <option value="Other">Other</option>
             </select>
-            <input type="text" id="deliv-form-platform-other" class="form-input" placeholder="Enter platform / merchant" style="display:none; margin-top:6px;" />
+            <input type="text" id="deliv-form-platform-other" class="form-input" placeholder="Enter platform / merchant" aria-label="Enter custom platform or merchant name" style="display:none; margin-top:6px;" />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Recipient Name</label>
+            <label class="form-label" for="deliv-form-name">Recipient Name</label>
             <input type="text" id="deliv-form-name" class="form-input" list="delivery-contact-names" required />
             <datalist id="delivery-contact-names"></datalist>
           </div>
           <div class="form-field">
-            <label class="form-label">Mobile Number</label>
+            <label class="form-label" for="deliv-form-mobile">Mobile Number</label>
             <input type="tel" id="deliv-form-mobile" class="form-input" list="delivery-contact-mobiles" required />
             <datalist id="delivery-contact-mobiles"></datalist>
           </div>
@@ -677,18 +677,18 @@
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Tracking Number / AWB</label>
+            <label class="form-label" for="deliv-form-tracking">Tracking Number / AWB</label>
             <input type="text" id="deliv-form-tracking" class="form-input" placeholder="e.g. FMPP4079948230" required />
           </div>
           <div class="form-field">
-            <label class="form-label">Pincode</label>
+            <label class="form-label" for="deliv-form-pincode">Pincode</label>
             <input type="text" id="deliv-form-pincode" class="form-input" list="delivery-contact-pincodes" placeholder="e.g. 251001" required />
             <datalist id="delivery-contact-pincodes"></datalist>
           </div>
         </div>
 
         <div class="form-field">
-          <label class="form-label">Live Delivery OTP</label>
+          <label class="form-label" for="deliv-form-otp">Live Delivery OTP</label>
           <input type="text" id="deliv-form-otp" class="form-input otp-field" placeholder="e.g. 885189" required />
         </div>
 
@@ -696,7 +696,7 @@
         <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
             <strong style="font-size:0.85rem;">GST Invoice Details & Attachment</strong>
-            <label style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
+            <label for="deliv-gst-toggle" style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
               <input type="checkbox" id="deliv-gst-toggle" onchange="toggleGstFields()" /> Include GST Bill
             </label>
           </div>
@@ -704,22 +704,22 @@
           <div id="deliv-gst-fields-wrapper" style="display:none;">
             <div class="form-grid two-col">
               <div class="form-field">
-                <label class="form-label">GST Number (GSTIN)</label>
+                <label class="form-label" for="gst-input-number">GST Number (GSTIN)</label>
                 <input type="text" id="gst-input-number" class="form-input" placeholder="e.g. 19ABCDE1234F1Z5" />
               </div>
               <div class="form-field">
-                <label class="form-label">Shop / Merchant Name</label>
+                <label class="form-label" for="gst-input-shop">Shop / Merchant Name</label>
                 <input type="text" id="gst-input-shop" class="form-input" placeholder="e.g. RetailNet / Appario" />
               </div>
             </div>
 
             <div class="form-grid two-col">
               <div class="form-field">
-                <label class="form-label">Taxable Base Amount (₹)</label>
+                <label class="form-label" for="gst-input-base">Taxable Base Amount (₹)</label>
                 <input type="number" id="gst-input-base" class="form-input" placeholder="e.g. 14406" oninput="recalcGstTotal()" />
               </div>
               <div class="form-field">
-                <label class="form-label">GST Percentage Rate</label>
+                <label class="form-label" for="gst-input-rate">GST Percentage Rate</label>
                 <select id="gst-input-rate" class="form-select" onchange="recalcGstTotal()">
                   <option value="18">18% (Standard Electronics)</option>
                   <option value="12">12%</option>
@@ -739,7 +739,7 @@
             </div>
 
             <div class="form-field" style="margin-top:8px;">
-              <label class="form-label">Upload Invoice (PDF File or Camera Photo)</label>
+              <label class="form-label" for="deliv-gst-file-input">Upload Invoice (PDF File or Camera Photo)</label>
               <div class="file-upload-zone" onclick="document.getElementById('deliv-gst-file-input').click()">
                 <input type="file" id="deliv-gst-file-input" accept="image/*,application/pdf" capture="environment" style="display:none;" onchange="handleGstFileChosen(this)" />
                 <div id="upload-status-text">
@@ -758,35 +758,35 @@
   </div>
 
   <!-- Modal: Create Booker Account Under Admin -->
-  <div class="modal-backdrop" id="modal-create-customer">
+  <div class="modal-backdrop" id="modal-create-customer" role="dialog" aria-modal="true" aria-labelledby="create-customer-title">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">Register Booker Under Admin</div>
-        <button class="modal-close" onclick="closeModal('modal-create-customer')">&times;</button>
+        <div class="modal-title" id="create-customer-title">Register Booker Under Admin</div>
+        <button class="modal-close" onclick="closeModal('modal-create-customer')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleCreateCustomerAccount(event)">
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Generated Booker ID</label>
+            <label class="form-label" for="new-cust-id">Generated Booker ID</label>
             <input type="text" id="new-cust-id" class="form-input" readonly style="color:var(--accent-cyan); font-weight:700;" />
           </div>
           <div class="form-field">
-            <label class="form-label">Booker Full Name</label>
+            <label class="form-label" for="new-cust-name">Booker Full Name</label>
             <input type="text" id="new-cust-name" class="form-input" placeholder="e.g. Soumen Rai" required />
           </div>
         </div>
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Mobile Number</label>
+            <label class="form-label" for="new-cust-mobile">Mobile Number</label>
             <input type="tel" id="new-cust-mobile" class="form-input" placeholder="e.g. 9830012345" required />
           </div>
           <div class="form-field">
-            <label class="form-label">Set Login Password</label>
+            <label class="form-label" for="new-cust-password">Set Login Password</label>
             <input type="text" id="new-cust-password" class="form-input" required />
           </div>
         </div>
         <div class="form-field">
-          <label class="form-label">Supervising Admin</label>
+          <label class="form-label" for="new-cust-admin-creator">Supervising Admin</label>
           <input type="text" id="new-cust-admin-creator" class="form-input" readonly style="opacity:0.8;" />
         </div>
         <button type="submit" class="btn btn-primary" style="width: 100%; padding: 11px; margin-top: 10px;">Create Booker Account & Sync</button>
@@ -795,18 +795,18 @@
   </div>
 
   <!-- Modal: Create Admin Account -->
-  <div class="modal-backdrop" id="modal-create-admin">
+  <div class="modal-backdrop" id="modal-create-admin" role="dialog" aria-modal="true" aria-labelledby="create-admin-title">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">Create Admin Account</div>
-        <button class="modal-close" onclick="closeModal('modal-create-admin')">&times;</button>
+        <div class="modal-title" id="create-admin-title">Create Admin Account</div>
+        <button class="modal-close" onclick="closeModal('modal-create-admin')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleCreateAdmin(event)">
-        <div class="form-field"><label class="form-label">Admin ID</label><input type="text" id="new-admin-id" class="form-input" required /></div>
-        <div class="form-field"><label class="form-label">Admin Name</label><input type="text" id="new-admin-name" class="form-input" required /></div>
+        <div class="form-field"><label class="form-label" for="new-admin-id">Admin ID</label><input type="text" id="new-admin-id" class="form-input" required /></div>
+        <div class="form-field"><label class="form-label" for="new-admin-name">Admin Name</label><input type="text" id="new-admin-name" class="form-input" required /></div>
         <div class="form-grid two-col">
-          <div class="form-field"><label class="form-label">Username</label><input type="text" id="new-admin-username" class="form-input" required /></div>
-          <div class="form-field"><label class="form-label">Password</label><div class="password-field"><input type="password" id="new-admin-password" class="form-input" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('new-admin-password', this)" aria-label="Show password">&#128065;</button></div></div>
+          <div class="form-field"><label class="form-label" for="new-admin-username">Username</label><input type="text" id="new-admin-username" class="form-input" required /></div>
+          <div class="form-field"><label class="form-label" for="new-admin-password">Password</label><div class="password-field"><input type="password" id="new-admin-password" class="form-input" required /><button type="button" class="password-toggle" onclick="togglePasswordVisibility('new-admin-password', this)" aria-label="Show password">&#128065;</button></div></div>
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%; padding:11px;">Create Admin & Sync</button>
       </form>
@@ -814,11 +814,11 @@
   </div>
 
   <!-- Modal: Settlement Processing (Admin Full Control) -->
-  <div class="modal-backdrop" id="modal-settlement">
+  <div class="modal-backdrop" id="modal-settlement" role="dialog" aria-modal="true" aria-labelledby="settlement-title">
     <div class="modal-window">
       <div class="modal-header">
-        <div class="modal-title">Process Order Settlement (Admin)</div>
-        <button class="modal-close" onclick="closeModal('modal-settlement')">&times;</button>
+        <div class="modal-title" id="settlement-title">Process Order Settlement (Admin)</div>
+        <button class="modal-close" onclick="closeModal('modal-settlement')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleExecuteSettlement(event)">
         <input type="hidden" id="settle-order-id" />
@@ -826,28 +826,28 @@
         
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Order Reference</label>
+            <label class="form-label" for="settle-order-ref">Order Reference</label>
             <input type="text" id="settle-order-ref" class="form-input" readonly />
           </div>
           <div class="form-field">
-            <label class="form-label">Booker Name</label>
+            <label class="form-label" for="settle-customer-name">Booker Name</label>
             <input type="text" id="settle-customer-name" class="form-input" readonly />
           </div>
         </div>
 
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Outstanding Balance (₹)</label>
+            <label class="form-label" for="settle-current-balance">Outstanding Balance (₹)</label>
             <input type="text" id="settle-current-balance" class="form-input" readonly style="color: var(--accent-amber); font-weight: 700;" />
           </div>
           <div class="form-field">
-            <label class="form-label">Settlement Amount (₹)</label>
+            <label class="form-label" for="settle-amount-input">Settlement Amount (₹)</label>
             <input type="number" id="settle-amount-input" class="form-input" placeholder="Enter amount" required />
           </div>
         </div>
 
         <div class="form-field">
-          <label class="form-label">Payment Mode / Reference Note</label>
+          <label class="form-label" for="settle-notes">Payment Mode / Reference Note</label>
           <input type="text" id="settle-notes" class="form-input" placeholder="e.g. Bank IMPS / UPI Ref #9021948201" required />
         </div>
 
@@ -857,16 +857,16 @@
   </div>
 
   <!-- Modal: Product Model Edit -->
-  <div class="modal-backdrop" id="modal-edit-product">
+  <div class="modal-backdrop" id="modal-edit-product" role="dialog" aria-modal="true" aria-labelledby="prod-modal-title">
     <div class="modal-window">
       <div class="modal-header">
         <div class="modal-title" id="prod-modal-title">Edit Product Model</div>
-        <button class="modal-close" onclick="closeModal('modal-edit-product')">&times;</button>
+        <button class="modal-close" onclick="closeModal('modal-edit-product')" aria-label="Close dialog">&times;</button>
       </div>
       <form onsubmit="handleSaveProduct(event)">
         <input type="hidden" id="edit-prod-id" />
         <div class="form-field">
-          <label class="form-label">Product Name & Spec</label>
+          <label class="form-label" for="edit-prod-name">Product Name & Spec</label>
           <input type="text" id="edit-prod-name" class="form-input" placeholder="e.g. iPhone 16 Pro 256GB" required />
         </div>
         <div class="form-field" id="product-owner-field" style="display:none;">
@@ -875,15 +875,15 @@
         </div>
         <div class="form-grid two-col">
           <div class="form-field">
-            <label class="form-label">Target Buy Price (₹)</label>
+            <label class="form-label" for="edit-prod-price">Target Buy Price (₹)</label>
             <input type="number" id="edit-prod-price" class="form-input" placeholder="119900" required />
           </div>
           <div class="form-field">
-            <label class="form-label">Booker Commission (₹)</label>
+            <label class="form-label" for="edit-prod-comm">Booker Commission (₹)</label>
             <input type="number" id="edit-prod-comm" class="form-input" placeholder="3000" required />
           </div>
         </div>
-        <label class="form-field" style="display:flex; align-items:center; gap:8px;">
+        <label class="form-field" for="edit-prod-active" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="edit-prod-active" checked />
           <span class="form-label" style="margin:0;">Product is active</span>
         </label>
@@ -893,11 +893,11 @@
   </div>
 
   <!-- Modal: GST Invoice Viewer (PDF & JPG) -->
-  <div class="modal-backdrop" id="modal-view-invoice">
+  <div class="modal-backdrop" id="modal-view-invoice" role="dialog" aria-modal="true" aria-labelledby="preview-invoice-title">
     <div class="modal-window">
       <div class="modal-header">
         <div class="modal-title" id="preview-invoice-title">GST Invoice Attachment</div>
-        <button class="modal-close" onclick="closeModal('modal-view-invoice')">&times;</button>
+        <button class="modal-close" onclick="closeModal('modal-view-invoice')" aria-label="Close dialog">&times;</button>
       </div>
       <div id="preview-invoice-body" style="text-align: center; margin-bottom: 18px;"></div>
       <div style="display:flex; justify-content: flex-end; gap: 8px;">

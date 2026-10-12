@@ -3679,8 +3679,76 @@ function testFirebaseConnection() {
   alert('Firebase Firestore Connection Verified.');
 }
 
-function openModal(id) { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+const modalTriggerElements = {};
+
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modalTriggerElements[id] = document.activeElement;
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+
+  setTimeout(() => {
+    const focusable = Array.from(modal.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+
+    if (focusable.length > 0) {
+      focusable[0].focus();
+    }
+  }, 50);
+}
+
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+
+  const trigger = modalTriggerElements[id];
+  if (trigger && typeof trigger.focus === 'function') {
+    trigger.focus();
+  }
+  delete modalTriggerElements[id];
+}
+
+window.addEventListener('keydown', (e) => {
+  const openModals = Array.from(document.querySelectorAll('.modal-backdrop.open'));
+  if (openModals.length === 0) return;
+  const currentModal = openModals[openModals.length - 1];
+
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeModal(currentModal.id);
+    return;
+  }
+
+  if (e.key === 'Tab') {
+    const focusable = Array.from(currentModal.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+
+    if (focusable.length === 0) {
+      e.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (e.shiftKey) {
+      if (document.activeElement === first || !currentModal.contains(document.activeElement)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last || !currentModal.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+});
 
 // Run Hydration
 resetLoadingOverlay();

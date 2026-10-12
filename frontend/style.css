@@ -108,6 +108,9 @@ body {
 }
 
 .brand-title {
+  margin: 0;
+  line-height: 1.2;
+  font-family: inherit;
   font-size: 1.15rem;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -926,4 +929,27 @@ tr:hover td { background: rgba(255, 255, 255, 0.015); }
   #tab-delivery .filter-bar { align-items: stretch; }
   #tab-delivery .filter-bar > div:last-child { justify-content: flex-end; }
   .delivery-details-grid { grid-template-columns: 1fr; }
+}
+
+/* Accessible Visible Focus Indicators (WCAG 2.4.7) */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--border-highlight) !important;
+  outline-offset: 2px !important;
+}
+
+/* Accessible Reduced Motion Overrides (WCAG 2.2.2 & 2.3.3) */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .badge-counter {
+    animation: none !important;
+  }
 }

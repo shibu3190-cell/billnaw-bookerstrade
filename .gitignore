@@ -1,0 +1,22 @@
+# Secrets & Local Configurations
+backend/serviceAccountKey.json
+backend/.env
+serviceAccountKey.json
+.env
+
+# Dependencies
+node_modules/
+backend/node_modules/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+backend/*.log
+
+# Operating System Files
+.DS_Store
+Thumbs.db
