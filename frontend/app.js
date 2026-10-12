@@ -3072,6 +3072,7 @@ function handleExecuteSettlement(e) {
   const amount = Number(document.getElementById('settle-amount-input').value);
   const notes = document.getElementById('settle-notes').value;
 
+  const order = AppState.orders.find(o => o.id === orderId);
   const isSelf = String(custId).startsWith('ADMIN-SELF-');
   const cust = AppState.customers.find(c => c.id === custId)
     || (isSelf ? { id: custId, name: order?.customerName || `${AppState.currentUser?.name} (Admin)` } : null);
@@ -3702,14 +3703,21 @@ function openModal(id) {
 function closeModal(id) {
   const modal = document.getElementById(id);
   if (!modal) return;
-  modal.classList.remove('open');
-  modal.setAttribute('aria-hidden', 'true');
 
   const trigger = modalTriggerElements[id];
-  if (trigger && typeof trigger.focus === 'function') {
-    trigger.focus();
-  }
   delete modalTriggerElements[id];
+
+  // Move focus away from modal descendants first to avoid Chrome's blocked aria-hidden warning
+  if (modal.contains(document.activeElement)) {
+    if (trigger && typeof trigger.focus === 'function' && document.contains(trigger)) {
+      trigger.focus();
+    } else if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+  }
+
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
 }
 
 window.addEventListener('keydown', (e) => {

@@ -101,4 +101,16 @@ test('app.js exports focus trap, restore, and Escape dismissal for modals', () =
   assert.ok(appJs.includes("if (e.key === 'Tab')"), 'app.js must trap Tab cycling inside active modal');
   assert.ok(appJs.includes('modal.setAttribute(\'aria-hidden\', \'false\')'), 'openModal must update aria-hidden');
   assert.ok(appJs.includes('modal.setAttribute(\'aria-hidden\', \'true\')'), 'closeModal must update aria-hidden');
+  assert.ok(
+    appJs.indexOf('modal.contains(document.activeElement)') < appJs.indexOf("modal.setAttribute('aria-hidden', 'true')"),
+    'closeModal must shift or blur focus before applying aria-hidden="true"'
+  );
+});
+
+test('handleExecuteSettlement properly resolves order from AppState before calculating balance and customer', () => {
+  const appJs = fs.readFileSync(appJsPath, 'utf8');
+  assert.ok(
+    appJs.includes('const order = AppState.orders.find(o => o.id === orderId);'),
+    'handleExecuteSettlement must define order to avoid ReferenceError'
+  );
 });
