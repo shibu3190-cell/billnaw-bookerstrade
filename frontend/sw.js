@@ -1,4 +1,4 @@
-const CACHE_NAME = 'devicetrade-v2026-10-12-3';
+const CACHE_NAME = 'devicetrade-v2026-10-12-4';
 const APP_CACHE_PREFIX = 'devicetrade-';
 const STATIC_ASSETS = [
   './',

@@ -99,11 +99,11 @@ test('app.js exports focus trap, restore, and Escape dismissal for modals', () =
   assert.ok(appJs.includes('const modalTriggerElements = {};'), 'app.js must track modal triggers');
   assert.ok(appJs.includes("if (e.key === 'Escape')"), 'app.js must dismiss modals on Escape');
   assert.ok(appJs.includes("if (e.key === 'Tab')"), 'app.js must trap Tab cycling inside active modal');
-  assert.ok(appJs.includes('modal.setAttribute(\'aria-hidden\', \'false\')'), 'openModal must update aria-hidden');
-  assert.ok(appJs.includes('modal.setAttribute(\'aria-hidden\', \'true\')'), 'closeModal must update aria-hidden');
+  assert.ok(appJs.includes("modal.removeAttribute('inert')"), 'openModal must remove inert on activation');
+  assert.ok(appJs.includes("modal.setAttribute('inert', '')"), 'closeModal must apply inert on deactivation');
   assert.ok(
-    appJs.indexOf('modal.contains(document.activeElement)') < appJs.indexOf("modal.setAttribute('aria-hidden', 'true')"),
-    'closeModal must shift or blur focus before applying aria-hidden="true"'
+    !appJs.includes("modal.setAttribute('aria-hidden', 'true')"),
+    'closeModal must not set aria-hidden="true" to avoid Chrome blocked aria-hidden focus error'
   );
 });
 

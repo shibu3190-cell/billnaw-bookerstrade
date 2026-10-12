@@ -3686,8 +3686,9 @@ function openModal(id) {
   const modal = document.getElementById(id);
   if (!modal) return;
   modalTriggerElements[id] = document.activeElement;
+  modal.removeAttribute('aria-hidden');
+  modal.removeAttribute('inert');
   modal.classList.add('open');
-  modal.setAttribute('aria-hidden', 'false');
 
   setTimeout(() => {
     const focusable = Array.from(modal.querySelectorAll(
@@ -3707,7 +3708,7 @@ function closeModal(id) {
   const trigger = modalTriggerElements[id];
   delete modalTriggerElements[id];
 
-  // Move focus away from modal descendants first to avoid Chrome's blocked aria-hidden warning
+  // Move focus away from modal descendants first to avoid focus retention
   if (modal.contains(document.activeElement)) {
     if (trigger && typeof trigger.focus === 'function' && document.contains(trigger)) {
       trigger.focus();
@@ -3717,7 +3718,8 @@ function closeModal(id) {
   }
 
   modal.classList.remove('open');
-  modal.setAttribute('aria-hidden', 'true');
+  modal.removeAttribute('aria-hidden');
+  modal.setAttribute('inert', '');
 }
 
 window.addEventListener('keydown', (e) => {
