@@ -161,8 +161,17 @@ function withRequestTimeout(timeoutMs = REQUEST_TIMEOUT_MS) {
   };
 }
 
+function sameOwner(left, right) {
+  const normalize = value => String(value || '').replace(/[-_\s]/g, '').toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
 function sameAdminId(left, right) {
-  return String(left || '').replace(/[-_\s]/g, '').toLowerCase() === String(right || '').replace(/[-_\s]/g, '').toLowerCase();
+  return sameOwner(left, right);
+}
+
+function sameCustomerId(left, right) {
+  return sameOwner(left, right);
 }
 
 function normalizeProductName(productName) {
@@ -3604,10 +3613,10 @@ function exportCustomerLedgerCSV() {
   const effectiveAdminId = getEffectiveAdminScopeId();
   const visibleCustomers = AppState.customers.filter(c => {
     if (AppState.currentUser?.role === 'customer') {
-      return sameCustomerId(c.id, AppState.currentUser?.id);
+      return sameCustomerId(c.id, AppState.currentUser?.customerId || AppState.currentUser?.id);
     }
     if (!effectiveAdminId) return true;
-    return sameAdminId(c.createdByAdmin, effectiveAdminId);
+    return sameAdminId(c.adminId || c.createdByAdmin, effectiveAdminId);
   });
   visibleCustomers.forEach(c => {
     const cOrders = dedupeOrderRecords(visibleOrders.filter(o => sameCustomerId(o.customerId, c.id)));

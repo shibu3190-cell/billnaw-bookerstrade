@@ -113,4 +113,13 @@ test('handleExecuteSettlement properly resolves order from AppState before calcu
     appJs.includes('const order = AppState.orders.find(o => o.id === orderId);'),
     'handleExecuteSettlement must define order to avoid ReferenceError'
   );
+  assert.ok(
+    appJs.includes('function sameOwner('),
+    'app.js must define sameOwner to prevent Uncaught ReferenceError'
+  );
+  assert.ok(
+    appJs.includes('function sameCustomerId('),
+    'app.js must define sameCustomerId to prevent Uncaught ReferenceError'
+  );
 });
+
