@@ -45,10 +45,11 @@ window.addEventListener('DOMContentLoaded', forceOverlayHiddenOnStartup, { once:
 window.addEventListener('pageshow', forceOverlayHiddenOnStartup, { once: true });
 
 const APP_CAN_USE_PWA = window.location.protocol === 'http:' || window.location.protocol === 'https:' || window.location.protocol === 'localhost:';
-if (APP_CAN_USE_PWA) {
+if (APP_CAN_USE_PWA && !document.querySelector('link[rel="manifest"]')) {
   const manifestLink = document.createElement('link');
   manifestLink.rel = 'manifest';
   manifestLink.href = 'manifest.json';
+  manifestLink.crossOrigin = 'use-credentials';
   document.head.appendChild(manifestLink);
 }
 
@@ -142,7 +143,7 @@ const STORAGE_DB_NAME = 'devicetrade-local';
 const STORAGE_DB_VERSION = 2;
 const STORAGE_STATE_STORE = 'state';
 const STORAGE_QUEUE_STORE = 'outbox';
-const REQUEST_TIMEOUT_MS = 25000;
+const REQUEST_TIMEOUT_MS = 60000;
 let storageDb = null;
 let offlineOutbox = [];
 let cloudSyncInFlight = null;
@@ -329,7 +330,7 @@ async function dispatchToBackend(endpoint, payload) {
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
       if (isSessionUnauthorized(res.status, errorBody.message)) {
-        await logoutApp();
+        await logoutApp('Your session has expired or is invalid. Please sign in again.');
       }
       const error = new Error(errorBody.message || errorBody.error || `HTTP ${res.status}`);
       error.status = res.status;
@@ -371,7 +372,9 @@ async function fetchFromBackend(endpoint, { silentLoading = false } = {}) {
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (isSessionUnauthorized(res.status, result.message)) await logoutApp();
+      if (isSessionUnauthorized(res.status, result.message)) {
+        await logoutApp('Your session has expired or is invalid. Please sign in again.');
+      }
       throw new Error(result.message || `HTTP ${res.status}`);
     }
     return result;
@@ -549,10 +552,11 @@ async function syncCloudData(showResult = false) {
         amountPaid: csvOrNumber(order['Amount Paid'] || order.amountPaid),
         payableAmount: csvOrNumber(order['Payable Due'] || order.payableAmount),
         advancePaid: csvOrNumber(order['Advance Paid'] || order.advancePaid),
-        settledAmount: csvOrNumber(order.settledAmount),
+        settledAmount: csvOrNumber(order['Settled Amount'] || order.settledAmount),
         profit: csvOrNumber(order.Profit || order.profit || AppState.products.find(product => product.name === (order['Product Model'] || order.productModel))?.commission),
         status: order.Status || order.status || 'Booked',
         createdAt: order.Date || order.createdAt || new Date().toISOString().slice(0, 10),
+        settledAt: order.settledAt || order['Settled Date'] || (String(order.Status || order.status).toLowerCase() === 'settled' ? (order.Date || order.createdAt || new Date().toISOString().slice(0, 10)) : null),
         adminId: order['Admin ID'] || order.adminId || AppState.adminProfile.adminId,
         isToday: order.isToday === true || order.isToday === 'true',
         delivery: order.delivery || null,
@@ -842,7 +846,8 @@ async function triggerAutoCloudSync(actionType, data = {}) {
     payload = {
       orderId: data.order.id,
       status: data.order.status,
-      settledAt: data.order.settledAt
+      settledAt: data.order.settledAt,
+      settledAmount: data.order.settledAmount
     };
   } else if (actionType === "PACKAGE_STATUS_CHANGED") {
     endpoint = '/orders/package-status';
@@ -1123,7 +1128,14 @@ function dedupeOrderRecords(orders) {
 }
 
 function getOrderNetDue(order) {
-  return csvOrNumber(order.payableAmount) - csvOrNumber(order.advancePaid) - csvOrNumber(order.settledAmount);
+  if (!order) return 0;
+  let payable = csvOrNumber(order.payableAmount);
+  if (payable <= 0) {
+    const paid = csvOrNumber(order.amountPaid);
+    const profit = typeof getOrderProfit === 'function' ? getOrderProfit(order) : csvOrNumber(order.profit);
+    payable = paid + profit;
+  }
+  return Math.max(0, payable - csvOrNumber(order.advancePaid) - csvOrNumber(order.settledAmount));
 }
 
 function normalizeOrder(order) {
@@ -1138,7 +1150,7 @@ function normalizeOrder(order) {
 
   const quantity = Math.max(1, Number(order.quantity) || 1);
   let amountPaid = csvOrNumber(order.amountPaid);
-  const payableAmount = csvOrNumber(order.payableAmount);
+  let payableAmount = csvOrNumber(order.payableAmount);
   const profit = csvOrNumber(order.profit);
 
   // If amountPaid was stored as unit card price (e.g. 10,000 for quantity 2 with payable 20,200),
@@ -1151,6 +1163,10 @@ function normalizeOrder(order) {
     unitPrice = Math.round(amountPaid / quantity);
   } else if (quantity === 1) {
     unitPrice = amountPaid;
+  }
+
+  if (payableAmount <= 0 && (amountPaid > 0 || profit > 0)) {
+    payableAmount = amountPaid + profit;
   }
 
   return {
@@ -1170,6 +1186,7 @@ function normalizeOrder(order) {
     profit,
     quantity,
     createdAt: order.createdAt || todayIsoDate(),
+    settledAt: order.settledAt || order['Settled Date'] || (String(order.Status || order.status).toLowerCase() === 'settled' ? (order.Date || order.createdAt || todayIsoDate()) : null),
     delivery,
     deliveryPackages: dedupeOrderPackages(order, (Array.isArray(order.deliveryPackages) ? order.deliveryPackages : []).map((packageEntry, index) => {
       const sequence = Number(packageEntry.sequence) || index + 1;
@@ -1396,6 +1413,8 @@ async function handleGstFileChosen(input) {
 
 // 5. Authentication Engine
 function selectAuthRole(role) {
+  const notice = document.getElementById('auth-session-notice');
+  if (notice) notice.style.display = 'none';
   document.getElementById('btn-auth-admin').classList.toggle('active', role === 'admin');
   document.getElementById('btn-auth-customer').classList.toggle('active', role === 'customer');
   document.getElementById('auth-username').value = '';
@@ -1473,7 +1492,7 @@ function showAuthenticatedView() {
   startCloudSync();
 }
 
-async function logoutApp() {
+async function logoutApp(reason = '') {
   appLoadingRequestCount = 0;
   const overlay = document.getElementById('app-loading-overlay');
   if (overlay) {
@@ -1486,6 +1505,16 @@ async function logoutApp() {
   AppState.sessionToken = '';
   if (cloudSyncTimer) clearInterval(cloudSyncTimer);
   await clearPersistedSession();
+  const notice = document.getElementById('auth-session-notice');
+  if (notice) {
+    if (reason) {
+      notice.textContent = reason;
+      notice.style.display = 'block';
+    } else {
+      notice.textContent = '';
+      notice.style.display = 'none';
+    }
+  }
   document.getElementById('view-app-main').style.display = 'none';
   document.getElementById('view-auth').style.display = 'flex';
 }
@@ -2000,7 +2029,7 @@ function renderDeliveryTable() {
           <button class="btn btn-subtle btn-sm" onclick="openDeliveryPackageDetails('${o.id}', '${packageId}')">Details</button>
           ${isAdmin && deliveryStatus === 'Out for Delivery' ? `<button class="btn btn-primary btn-sm" onclick="markOrderDelivered('${o.id}', '${packageId}')">Mark Delivered</button>` : ''}
           ${isAdmin && !item.packageEntry && deliveryStatus === 'Delivered' ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle</button>` : ''}
-          ${isAdmin && item.packageEntry && o.status === 'Delivered' && packageId === dedupeOrderPackages(o, o.deliveryPackages || []).at(-1)?.id && !String(o.customerId).startsWith('ADMIN-SELF-') ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle Order</button>` : ''}
+          ${isAdmin && item.packageEntry && o.status === 'Delivered' && packageId === dedupeOrderPackages(o, o.deliveryPackages || []).at(-1)?.id ? `<button class="btn btn-success btn-sm" onclick="openSettlementModalForOrder('${o.id}')">Settle Order</button>` : ''}
         </td>
       </tr>
     `;
@@ -3070,34 +3099,48 @@ function handleExecuteSettlement(e) {
   const orderId = document.getElementById('settle-order-id').value;
   const custId = document.getElementById('settle-customer-id').value;
   const amount = Number(document.getElementById('settle-amount-input').value);
-  const notes = document.getElementById('settle-notes').value;
+  const notes = document.getElementById('settle-notes').value.trim() || 'Settled';
 
   const order = AppState.orders.find(o => o.id === orderId);
-  const isSelf = String(custId).startsWith('ADMIN-SELF-');
-  const cust = AppState.customers.find(c => c.id === custId)
-    || (isSelf ? { id: custId, name: order?.customerName || `${AppState.currentUser?.name} (Admin)` } : null);
+  const isSelf = String(custId || '').toUpperCase().startsWith('ADMIN-SELF-');
+  const cust = AppState.customers.find(c => sameOwner(c.id, custId))
+    || { id: custId, name: order?.customerName || (isSelf ? `${AppState.currentUser?.name || 'Admin'} (Admin)` : 'Booker') };
   const outstanding = order ? getOrderNetDue(order) : 0;
 
-  if (!order || !cust || !Number.isFinite(amount) || amount <= 0 || amount > outstanding) {
-    alert('Settlement amount must be greater than zero and no more than the outstanding balance.');
+  if (!order) {
+    alert('Order not found.');
+    return;
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    alert('Please enter a valid settlement amount greater than zero.');
+    return;
+  }
+  if (Math.round(amount * 100) > Math.round(outstanding * 100)) {
+    alert(`Settlement amount (₹${amount.toLocaleString()}) cannot exceed the outstanding balance (₹${outstanding.toLocaleString()}).`);
     return;
   }
 
-  if (order && cust) {
-    order.settledAmount = (order.settledAmount || 0) + amount;
+  order.settledAmount = (order.settledAmount || 0) + amount;
+  if (cust && typeof cust.totalSettled === 'number') {
     cust.totalSettled = (cust.totalSettled || 0) + amount;
-
-    const fullySettled = (order.advancePaid || 0) + order.settledAmount >= order.payableAmount;
-    order.status = fullySettled ? 'Settled' : 'Delivered';
-    if (fullySettled) {
-      order.settledAt = order.settledAt || todayIsoDate();
-    }
-
-    closeModal('modal-settlement');
-    renderAllViews();
-    triggerAutoCloudSync('SETTLEMENT_RECORDED', { orderId, customerId: custId, customerName: cust.name, amount, notes });
-    triggerAutoCloudSync('STATUS_CHANGED', { order: ensureOrderSettlementMeta(order) });
   }
+  const matchingCustomer = AppState.customers.find(c => sameOwner(c.id, custId));
+  if (matchingCustomer && matchingCustomer !== cust) {
+    matchingCustomer.totalSettled = (matchingCustomer.totalSettled || 0) + amount;
+  }
+
+  const payable = order.payableAmount || ((order.amountPaid || 0) + getOrderProfit(order));
+  const fullySettled = (order.advancePaid || 0) + order.settledAmount >= payable;
+  order.status = fullySettled ? 'Settled' : 'Delivered';
+  if (fullySettled) {
+    order.settledAt = order.settledAt || todayIsoDate();
+  }
+
+  persistLocalState();
+  closeModal('modal-settlement');
+  renderAllViews();
+  triggerAutoCloudSync('SETTLEMENT_RECORDED', { orderId, customerId: custId, customerName: cust.name, amount, notes });
+  triggerAutoCloudSync('STATUS_CHANGED', { order: ensureOrderSettlementMeta(order) });
 }
 
 // 9. Modals, Lifetime Drilldown & Out For Delivery Today

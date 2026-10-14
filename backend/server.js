@@ -1075,12 +1075,49 @@ app.post('/api/orders/settle', authenticate, requireSession, async (req, res) =>
       return res.status(400).json({ success: false, message: 'A positive settlement amount, orderId, and customerId are required.' });
     }
 
-    const orderSnapshot = await db.collection('orders').doc(orderId).get();
-    if (!orderSnapshot.exists) return res.status(404).json({ success: false, message: 'Booking not found.' });
-    const order = orderSnapshot.data();
+    let order = null;
+    try {
+      const orderSnapshot = await db.collection('orders').doc(orderId).get();
+      if (orderSnapshot.exists) order = orderSnapshot.data();
+    } catch (firestoreError) {
+      console.error(`Firestore settlement lookup failed for ${orderId}; checking Sheets:`, firestoreError.message);
+    }
+
+    const sheetData = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Orders!A:M' }).catch(() => ({ data: { values: [] } }));
+    const rows = sheetData.data.values || [];
+    const rowIndex = rows.findIndex(row => row[0] === orderId);
+
+    if (!order && rowIndex > 0) {
+      const row = rows[rowIndex];
+      order = {
+        id: row[0],
+        platform: row[1],
+        productModel: row[2],
+        quantity: Number(row[3]) || 1,
+        customerName: row[4],
+        customerId: row[5],
+        cardLast4: row[6],
+        amountPaid: Number(row[7]) || 0,
+        payableAmount: Number(row[8]) || 0,
+        advancePaid: Number(row[9]) || 0,
+        status: row[10],
+        createdAt: row[11],
+        adminId: row[12]
+      };
+    }
+
+    if (!order) return res.status(404).json({ success: false, message: 'Booking not found.' });
     if (!canAccessOrder(actor, order) || !sameOwner(order.customerId, customerId)) {
       return res.status(403).json({ success: false, message: 'You can only settle bookings owned by your account.' });
     }
+
+    const currentSettled = Number(order.settledAmount || 0);
+    const newSettled = currentSettled + Number(amount);
+    const payable = Number(order.payableAmount || 0);
+    const advance = Number(order.advancePaid || 0);
+    const fullySettled = (advance + newSettled) >= payable;
+    const today = new Date().toISOString().slice(0, 10);
+    const settledAt = fullySettled ? (order.settledAt || today) : null;
 
     await tryFirestore(async () => {
       const custRef = db.collection('customers').doc(customerId);
@@ -1092,19 +1129,25 @@ app.post('/api/orders/settle', authenticate, requireSession, async (req, res) =>
       const ordDoc = await ordRef.get();
       if (ordDoc.exists) {
         const orderData = ordDoc.data();
-        const currentSettled = Number(orderData.settledAmount || 0);
-        const newSettled = currentSettled + Number(amount);
-        const payable = Number(orderData.payableAmount || 0);
-        const advance = Number(orderData.advancePaid || 0);
-        const fullySettled = (advance + newSettled) >= payable;
         const patch = { settledAmount: newSettled };
         if (fullySettled) {
           patch.status = 'Settled';
-          if (!orderData.settledAt) patch.settledAt = new Date().toISOString().slice(0, 10);
+          if (!orderData.settledAt) patch.settledAt = today;
         }
         await ordRef.update(patch);
       }
     }, `settle customer ${customerId} and order ${orderId}`);
+
+    if (rowIndex > 0 && fullySettled) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `Orders!K${rowIndex + 1}`,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [['Settled']] }
+      }).catch(sheetErr => {
+        console.warn('Could not update Orders sheet status to Settled:', sheetErr.message);
+      });
+    }
 
     await ensureSheetTab('Settlements', ['Order ID', 'Customer ID', 'Customer Name', 'Settled Amount', 'Payment Note', 'Timestamp']);
     await sheets.spreadsheets.values.append({
@@ -1114,7 +1157,7 @@ app.post('/api/orders/settle', authenticate, requireSession, async (req, res) =>
       resource: { values: [[orderId, customerId, customerName, amount, notes, new Date().toISOString()]] }
     });
 
-    res.json({ success: true });
+    res.json({ success: true, settledAmount: newSettled, status: fullySettled ? 'Settled' : 'Delivered', settledAt });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

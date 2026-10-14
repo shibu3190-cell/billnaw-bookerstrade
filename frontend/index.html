@@ -35,10 +35,11 @@
   <meta name="apple-mobile-web-app-title" content="DeviceTrade" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="manifest" href="manifest.json" crossorigin="use-credentials" />
 
-  <link rel="stylesheet" href="style.css?v=20261012-4" />
+  <link rel="stylesheet" href="style.css?v=20261014-2" />
   <script defer src="csv.js?v=20261011"></script>
-  <script defer src="app.js?v=20261012-4"></script>
+  <script defer src="app.js?v=20261014-2"></script>
 </head>
 <body>
 
@@ -82,6 +83,8 @@
         <h2>⚡ DeviceTrade Pro</h2>
         <p>Arbitrage Logistics, Booker OTPs & Ledger POS</p>
       </div>
+
+      <div id="auth-session-notice" class="auth-session-notice" role="alert" style="display: none; padding: 10px 12px; margin-bottom: 14px; background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); border-radius: var(--radius-sm); color: #fca5a5; font-size: 0.8rem; text-align: center;"></div>
 
       <div class="role-switcher">
         <button type="button" class="role-toggle-btn active" id="btn-auth-admin" onclick="selectAuthRole('admin')">Master Admin</button>
